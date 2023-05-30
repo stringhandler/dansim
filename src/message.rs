@@ -2,11 +2,11 @@ use std::fmt::{Display, Formatter};
 use crate::transaction::Transaction;
 
 pub enum Message {
-    Transaction(usize, Transaction),
+    Transaction(u32, Transaction),
 }
 
 impl Message {
-    fn id(&self) -> usize {
+    pub fn id(&self) -> u32 {
         match self {
             Message::Transaction(id, _) => *id
         }

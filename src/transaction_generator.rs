@@ -1,4 +1,4 @@
-use crate::transaction::Transaction;
+use crate::transaction::{Shard, Transaction};
 
 pub struct TransactionGenerator {
     static_transactions: Vec<Transaction>,
@@ -6,21 +6,21 @@ pub struct TransactionGenerator {
 }
 
 impl TransactionGenerator {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             static_transactions : vec![
                 Transaction {
-                    shards: vec![0, 1, 2]
+                    shards: vec![Shard(0), Shard(1), Shard(2)]
                 },
                 Transaction {
-                    shards: vec![0,1]
+                    shards: vec![Shard(0),Shard(1)]
                 }
             ],
             current_index : 0
         }
     }
 
-    fn next(&mut self) -> Option<Transaction> {
+    pub fn next(&mut self) -> Option<Transaction> {
         if self.current_index >= self.static_transactions.len() {
             return None;
         }
