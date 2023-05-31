@@ -11,3 +11,4 @@ humantime = "*"
 rand="*"
 itertools= "*"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+log = "*"

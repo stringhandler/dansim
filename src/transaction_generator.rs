@@ -10,10 +10,10 @@ impl TransactionGenerator {
         Self {
             static_transactions : vec![
                 Transaction {
-                    shards: vec![Shard(0), Shard(1), Shard(2)]
+                    shards: vec![Shard(0), Shard(1)]
                 },
                 Transaction {
-                    shards: vec![Shard(0),Shard(1)]
+                    shards: vec![Shard(0)]
                 }
             ],
             current_index : 0

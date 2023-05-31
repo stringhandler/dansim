@@ -20,8 +20,10 @@ use crate::block::Block;
 use crate::committee_manager::CommitteeManager;
 use crate::id_provider::IdProvider;
 use tokio;
+use crate::transaction::Shard;
 
 mod cli;
+mod qc;
 mod validator_node;
 mod transaction_generator;
 mod transaction;
@@ -50,9 +52,12 @@ async fn main() {
     let genesis  = Arc::new(Block::genesis());
     let committee_manager = CommitteeManager::new();
     for i in 0..cli.num_vns {
-        let vn = ValidatorNode::new(id_provider.next(), 0, i, cli.num_vns, cli.clone(), genesis.clone(), id_provider.clone(), committee_manager.clone());
+        let shard = Shard(i as u32 % cli.num_shards);
+        let vn = ValidatorNode::new(id_provider.next(), shard, i, cli.num_vns, cli.clone(), genesis.clone(), id_provider.clone(), committee_manager.clone());
         network.add_connection(indexer.id, vn.id, cli.min_latency.into(), cli.max_latency.into());
+        committee_manager.add_validator( vn.shard, vn.id).await;
         vns.insert(vn.id, vn);
+
     }
 
     for (_, vn) in &vns {
@@ -72,9 +77,10 @@ async fn main() {
     loop {
         println!("Time: {:?}", curr_time);
         if let Some(transaction) = transaction_generator.next() {
+            let transaction = Arc::new(transaction);
             println!("Transaction: {:?}", transaction);
             for (vn_id, _) in &vns {
-                let m =  Message::Transaction(id_provider.next(), transaction.clone());
+                let m =  Message::Transaction{ id: id_provider.next(), tx: transaction.clone()};
 
                 println!("Sending transaction message: {} to vn: {:?}", m.id(), vn_id);
                 network.send_message(indexer.id, *vn_id, m, curr_time);
@@ -86,7 +92,7 @@ async fn main() {
             vns.get_mut(&to).expect("not found").deliver_message(message, curr_time);
         }
         for (_, vn) in &mut vns {
-            let broadcasts = vn.update(curr_time);
+            let broadcasts = vn.update(curr_time).await;
             for (to, message) in broadcasts {
                 println!("Broadcast: {} arrives at: {:?}", message, to);
                 network.send_message(vn.id, to, message, curr_time);

@@ -11,4 +11,6 @@ pub struct Cli {
     pub max_latency: humantime::Duration,
     #[clap(long, default_value = "10")]
     pub max_block_size: usize,
+    #[clap(long, default_value = "2")]
+    pub num_shards: u32,
 }
