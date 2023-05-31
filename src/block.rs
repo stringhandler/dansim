@@ -1,7 +1,8 @@
-use std::sync::Arc;
 use crate::qc::Qc;
 use crate::transaction::Transaction;
+use std::sync::Arc;
 
+#[derive(Debug)]
 pub struct Block {
     pub id: u32,
     pub parent_id: u32,
@@ -10,7 +11,6 @@ pub struct Block {
     pub proposed_by: u32,
 }
 
-
 impl Block {
     pub fn new(id: u32, parent_id: u32, justify: Arc<Qc>, height: u32, proposed_by: u32) -> Self {
         Self {
@@ -18,7 +18,7 @@ impl Block {
             parent_id,
             justify,
             height,
-            proposed_by
+            proposed_by,
         }
     }
 
@@ -28,7 +28,7 @@ impl Block {
             parent_id: 0,
             justify: Arc::new(Qc::genesis()),
             height: 0,
-            proposed_by: 0
+            proposed_by: 0,
         }
     }
 }
