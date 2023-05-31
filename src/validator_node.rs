@@ -19,8 +19,6 @@ pub struct ValidatorNode {
     pub new_tx_mempool: Vec<(u128, Arc<Transaction>)>,
     pub incoming_messages: VecDeque<(u128, Message)>,
     pub hotstuff_round: usize,
-    pub index_in_shard: usize,
-    pub shard_size: usize,
     pub last_proposed_round: Option<usize>,
     pub config: Arc<Cli>,
     pub blocks: HashMap<u32, Arc<Block>>,
@@ -33,14 +31,13 @@ pub struct ValidatorNode {
     committee_manager: CommitteeManager,
     votes: HashMap<u32, Vec<u32>>,
     time_last_proposal_received: u128,
+    b_exec: Arc<Block>,
 }
 
 impl ValidatorNode {
     pub fn new(
         id: u32,
         shard: Shard,
-        index_in_shard: usize,
-        shard_size: usize,
         config: Arc<Cli>,
         genesis: Arc<Block>,
         id_provider: IdProvider,
@@ -55,8 +52,6 @@ impl ValidatorNode {
             new_tx_mempool: Vec::new(),
             incoming_messages: VecDeque::new(),
             hotstuff_round: 0,
-            index_in_shard,
-            shard_size,
             last_proposed_round: None,
             config,
             blocks,
@@ -69,6 +64,7 @@ impl ValidatorNode {
             last_voted_height: 0,
             votes: HashMap::new(),
             time_last_proposal_received: 0,
+            b_exec: genesis.clone(),
         }
     }
 
@@ -127,6 +123,32 @@ impl ValidatorNode {
     }
 
     fn update_blocks(&mut self, block: Arc<Block>) {
+        let b_dash_dash = self
+            .blocks
+            .get(&block.justify.block_id)
+            .expect("justify parent was missing, should request it")
+            .clone();
+
+        let b_dash = self
+            .blocks
+            .get(&b_dash_dash.parent_id)
+            .expect("justify parent was missing, should request it")
+            .clone();
+
+        let b = self
+            .blocks
+            .get(&b_dash.parent_id)
+            .expect("justify parent was missing, should request it")
+            .clone();
+
+        self.update_high_qc(block.justify.clone());
+        if b_dash.height > self.locked_node.height {
+            self.locked_node = b_dash.clone();
+        }
+        if b_dash_dash.parent_id == b_dash.id && b_dash.parent_id == b.id {
+            self.on_commit(b.clone());
+            self.b_exec = b.clone();
+        }
         // self.blocks.insert(block.id, block.clone());
         // if self.does_extend(&block, &self.b_leaf) {
         //     self.b_leaf = block.clone();
@@ -136,6 +158,26 @@ impl ValidatorNode {
         // }
         // if self.does_extend(&block, &self.high_qc.block_id) {
         //     self.high_qc = block.justify.clone();
+        // }
+    }
+
+    fn on_commit(&mut self, block: Arc<Block>) {
+        if self.b_exec.height < block.height {
+            let parent = self
+                .blocks
+                .get(&block.parent_id)
+                .expect("justify parent was missing, should request it");
+            self.on_commit(parent.clone());
+            self.execute(&block);
+        }
+        // if self.does_extend(&block, &self.b_exec) {
+        //     self.b_exec = block.clone();
+        // }
+    }
+
+    fn execute(&mut self, block: &Block) {
+        // for tx in &block.transactions {
+        //     self.subscriber.on_execute(self.id, tx.clone());
         // }
     }
 
@@ -153,12 +195,15 @@ impl ValidatorNode {
         for (time, message) in incoming_messages {
             match message {
                 Message::Transaction { tx, .. } => {
-                    dbg!("transaction");
                     self.add_transaction(tx, time);
                 }
                 Message::BlockProposal { block, .. } => {
-                    dbg!("block proposal");
                     self.time_last_proposal_received = current_time;
+                    if !self.blocks.contains_key(&block.id) {
+                        self.blocks.insert(block.id, block.clone());
+                    } else {
+                        dbg!("Got a duplicate block proposal");
+                    }
                     outgoing.extend(self.on_receive_proposal(block, current_time).await);
                 }
                 Message::Vote {
@@ -167,8 +212,7 @@ impl ValidatorNode {
                     vote_by,
                     ..
                 } => {
-                    dbg!("vote");
-                    has_new_qc = self.on_receive_vote(block_id, block_height, vote_by);
+                    has_new_qc = self.on_receive_vote(block_id, block_height, vote_by).await;
                 }
             }
         }
@@ -177,7 +221,7 @@ impl ValidatorNode {
         if has_new_qc
             || self.time_last_proposal_received + self.config.delta.as_millis() < current_time
         {
-            if self.is_leader()
+            if self.is_leader().await
                 && (self.last_proposed_round.is_none()
                     || self.last_proposed_round.unwrap() < self.hotstuff_round)
             {
@@ -187,14 +231,19 @@ impl ValidatorNode {
         outgoing
     }
 
-    fn on_receive_vote(&mut self, block_id: u32, block_height: u32, vote_by: u32) -> bool {
+    async fn on_receive_vote(&mut self, block_id: u32, block_height: u32, vote_by: u32) -> bool {
         let votes = self.votes.entry(block_id).or_insert_with(Vec::new);
         if !votes.contains(&vote_by) {
             votes.push(vote_by);
         }
         let votes = votes.clone();
-        if votes.len() > self.shard_size - ((self.shard_size - 1) / 3) {
-            dbg!("Consensus reached with {} votes", votes.len());
+        let shard_size = self.committee_manager.get_committee(self.shard).await.len();
+        if votes.len() >= shard_size - ((shard_size - 1) / 3) {
+            dbg!(
+                "Consensus reached with {} votes, self:{}",
+                votes.len(),
+                self.id
+            );
             self.update_high_qc(Arc::new(Qc::new(
                 self.id_provider.next(),
                 block_id,
@@ -209,11 +258,20 @@ impl ValidatorNode {
 
     fn update_high_qc(&mut self, qc: Arc<Qc>) {
         if qc.block_height > self.high_qc.block_height {
+            dbg!(&qc);
+            self.b_leaf = self
+                .blocks
+                .get(&qc.block_id)
+                .expect("justify parent was missing, should request it")
+                .clone();
             self.high_qc = qc;
         }
     }
-    fn is_leader(&self) -> bool {
-        self.index_in_shard == self.hotstuff_round % self.shard_size
+    async fn is_leader(&self) -> bool {
+        self.committee_manager
+            .next_leader(self.shard, self.b_leaf.proposed_by)
+            .await
+            == self.id
     }
 
     async fn create_leaf(

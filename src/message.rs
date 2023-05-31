@@ -35,7 +35,9 @@ impl Display for Message {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Message::Transaction { id, tx } => write!(f, "Msg:Transaction: {}:{:?}", id, tx),
-            Message::BlockProposal { id, .. } => write!(f, "Msg:BlockProposal: {}", id),
+            Message::BlockProposal { id, block } => {
+                write!(f, "Msg:BlockProposal: {} Block:{}", id, block.id)
+            }
             Message::Vote { id, .. } => write!(f, "Msg:Vote: {}", id),
         }
     }

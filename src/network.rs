@@ -37,23 +37,28 @@ impl Network {
         } else {
             min_latency
         };
-        let min_id = std::cmp::min(from, to);
-        let max_id = std::cmp::max(from, to);
+
         self.connections
-            .entry(min_id)
+            .entry(from)
             .or_insert_with(HashMap::new)
-            .insert(max_id, NetworkConnection::new(latency));
+            .insert(to, NetworkConnection::new(latency));
+        self.connections
+            .entry(to)
+            .or_insert_with(HashMap::new)
+            .insert(from, NetworkConnection::new(latency));
     }
 
-    pub fn send_message(&mut self, from: u32, to: u32, message: Message, current_time: u128) {
-        let min_id = std::cmp::min(from, to);
-        let max_id = std::cmp::max(from, to);
+    pub async fn send_message(&mut self, from: u32, to: u32, message: Message, current_time: u128) {
         let mut connection = self
             .connections
-            .get_mut(&min_id)
+            .get_mut(&from)
             .unwrap()
-            .get_mut(&max_id)
+            .get_mut(&to)
             .unwrap();
+        self.subscriber
+            .on_message_sent(from, to, message.id(), message.to_string(), current_time)
+            .await;
+        println!("{} Sent -> {}: {}", from, to, message.to_string());
         connection.push_message(message, current_time);
     }
 

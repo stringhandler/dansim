@@ -26,7 +26,7 @@ impl Subscriber {
         let mut res = self.client.execute(query("MATCH (b: Block {id: $id}), (v: VN { id: $vn_id}) CREATE (v)-[n:PROPOSES { t:  $time}]->(b) RETURN n")
             .param("id", block.id)
             .param("time", time as u32)
-            .param("vn_id", format!("vn_{}", block.proposed_by))).await.expect("Failed to create block");
+            .param("vn_id", format!("node_{}", block.proposed_by))).await.expect("Failed to create block");
         while let Ok(Some(row)) = res.next().await {
             println!("rel created");
         }
@@ -36,7 +36,7 @@ impl Subscriber {
         let mut res = self.client.execute(query("MATCH (b: Block {id: $id}), (v: VN { id: $vn_id}) CREATE (v)-[n:VOTES { t:  $t}]->(b) RETURN n")
             .param("id", block_id)
         .param("t", t as u32)
-            .param("vn_id", format!("vn_{}", vn_id))).await.expect("Failed to create block");
+            .param("vn_id", format!("node_{}", vn_id))).await.expect("Failed to create block");
 
         while let Ok(Some(row)) = res.next().await {
             println!("vote created");
@@ -59,7 +59,9 @@ impl Subscriber {
     pub async fn create_vn(&self, vn_id: u32, shard_id: Shard) {
         let mut res = self
             .client
-            .execute(query("CREATE (vn: VN { id: $id })").param("id", format!("vn_{}", vn_id)))
+            .execute(
+                query("CREATE (vn: VN:Node { id: $id })").param("id", format!("node_{}", vn_id)),
+            )
             .await
             .expect("Failed to create vn");
         while let Ok(Some(row)) = res.next().await {
@@ -70,13 +72,62 @@ impl Subscriber {
             .execute(
                 query("MATCH (vn: VN { id: $vn_id}), (s:Shard { id: $id })  CREATE (vn)-[n:BELONGS_TO]->(s) RETURN n")
                     .param("id", format!("shard_{}", shard_id.0))
-                    .param("vn_id", format!("vn_{}", vn_id)),
+                    .param("vn_id", format!("node_{}", vn_id)),
             )
             .await
             .expect("Could not link to shard");
 
         while let Ok(Some(row)) = res.next().await {
             println!("rel created");
+        }
+    }
+
+    pub async fn create_indexer(&self, id: u32) {
+        let mut res = self
+            .client
+            .execute(
+                query("CREATE (in: Indexer:Node { id: $id })").param("id", format!("node_{}", id)),
+            )
+            .await
+            .expect("Failed to create indexer");
+        while let Ok(Some(row)) = res.next().await {
+            println!("indexer created");
+        }
+    }
+
+    pub async fn on_message_sent(
+        &self,
+        from: u32,
+        to: u32,
+        message_id: u32,
+        message: String,
+        t: u128,
+    ) {
+        let mut res = self
+            .client
+            .execute(
+                query(" CREATE (m:Message {id: $message_id, message:$message, t:$t})")
+                    .param("to", format!("node_{}", to))
+                    .param("t", t as u32)
+                    .param("message_id", message_id)
+                    .param("message", message),
+            )
+            .await
+            .expect("Failed to create message");
+        while let Ok(Some(row)) = res.next().await {
+            println!("message created");
+        }
+
+        let mut res = self.client.execute(
+            query("MATCH (vn: Node { id: $from}), (m: Message {id: $message_id}) CREATE (vn)-[n:SENT { t:  $t}]->(m) RETURN n")
+                .param("from", format!("node_{}", from))
+                .param("to", format!("node_{}", to))
+                .param("t", t as u32)
+                .param("message_id", message_id)
+        ).await.expect("Failed to create message");
+
+        while let Ok(Some(row)) = res.next().await {
+            println!("message created");
         }
     }
 }

@@ -49,6 +49,7 @@ async fn main() {
     let mut network = Network::new(subscriber.clone());
     let id_provider = IdProvider::new();
     let indexer = Indexer::new(id_provider.next());
+    subscriber.create_indexer(indexer.id).await;
     let cli = Arc::new(cli);
     let genesis = Arc::new(Block::genesis());
     let committee_manager = CommitteeManager::new();
@@ -60,8 +61,6 @@ async fn main() {
         let vn = ValidatorNode::new(
             id_provider.next(),
             shard,
-            i,
-            cli.num_vns,
             cli.clone(),
             genesis.clone(),
             id_provider.clone(),
@@ -116,12 +115,11 @@ async fn main() {
                 };
 
                 println!("Sending transaction message: {} to vn: {:?}", m.id(), vn_id);
-                network.send_message(indexer.id, *vn_id, m, curr_time);
+                network.send_message(indexer.id, *vn_id, m, curr_time).await;
             }
         }
         loop {
             let mut new_messages = false;
-            dbg!(&network);
             // loop because there are loop backs
             let messages = network.update(curr_time);
             for (to, message) in messages {
@@ -132,12 +130,11 @@ async fn main() {
             }
             for (_, vn) in &mut vns {
                 let broadcasts = vn.update(curr_time).await;
-                dbg!(&broadcasts);
                 if !broadcasts.is_empty() {
                     new_messages = true;
                 }
                 for (to, message) in broadcasts {
-                    network.send_message(vn.id, to, message, curr_time);
+                    network.send_message(vn.id, to, message, curr_time).await;
                 }
             }
             if !new_messages {
