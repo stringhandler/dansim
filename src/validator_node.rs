@@ -153,9 +153,11 @@ impl ValidatorNode {
         for (time, message) in incoming_messages {
             match message {
                 Message::Transaction { tx, .. } => {
+                    dbg!("transaction");
                     self.add_transaction(tx, time);
                 }
                 Message::BlockProposal { block, .. } => {
+                    dbg!("block proposal");
                     self.time_last_proposal_received = current_time;
                     outgoing.extend(self.on_receive_proposal(block, current_time).await);
                 }
@@ -165,6 +167,7 @@ impl ValidatorNode {
                     vote_by,
                     ..
                 } => {
+                    dbg!("vote");
                     has_new_qc = self.on_receive_vote(block_id, block_height, vote_by);
                 }
             }

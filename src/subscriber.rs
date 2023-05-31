@@ -13,8 +13,9 @@ pub struct Subscriber {
 
 impl Subscriber {
     pub async fn on_create_leaf(&self, block: Arc<Block>, time: u128) {
-        let mut res = self.client.execute(query("CREATE (b: Block { id: $id, parent_id: $parent_id, height: $height, proposed_by: $proposed_by })")
+        let mut res = self.client.execute(query("CREATE (b: Block { id: $id, parent_id: $parent_id, height: $height, proposed_by: $proposed_by, t: $time })")
             .param("id", block.id)
+            .param("time", time as u32)
             .param("parent_id", block.parent_id)
             .param("height", block.height)
             .param("proposed_by", block.proposed_by)).await.expect("Failed to create block");

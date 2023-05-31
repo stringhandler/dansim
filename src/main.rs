@@ -89,13 +89,14 @@ async fn main() {
                     Duration::from_millis(0),
                     Duration::from_millis(0),
                 );
+            } else {
+                network.add_connection(
+                    vn.id,
+                    vninner.id,
+                    cli.min_latency.into(),
+                    cli.max_latency.into(),
+                );
             }
-            network.add_connection(
-                vn.id,
-                vninner.id,
-                cli.min_latency.into(),
-                cli.max_latency.into(),
-            );
         }
     }
 
@@ -118,17 +119,29 @@ async fn main() {
                 network.send_message(indexer.id, *vn_id, m, curr_time);
             }
         }
-        let messages = network.update(curr_time);
-        for (to, message) in messages {
-            println!("Message: {} arrives at: {:?}", message, to);
-            vns.get_mut(&to)
-                .expect("not found")
-                .deliver_message(message, curr_time);
-        }
-        for (_, vn) in &mut vns {
-            let broadcasts = vn.update(curr_time).await;
-            for (to, message) in broadcasts {
-                network.send_message(vn.id, to, message, curr_time);
+        loop {
+            let mut new_messages = false;
+            dbg!(&network);
+            // loop because there are loop backs
+            let messages = network.update(curr_time);
+            for (to, message) in messages {
+                println!("Message: {} arrives at: {:?}", message, to);
+                vns.get_mut(&to)
+                    .expect("not found")
+                    .deliver_message(message, curr_time);
+            }
+            for (_, vn) in &mut vns {
+                let broadcasts = vn.update(curr_time).await;
+                dbg!(&broadcasts);
+                if !broadcasts.is_empty() {
+                    new_messages = true;
+                }
+                for (to, message) in broadcasts {
+                    network.send_message(vn.id, to, message, curr_time);
+                }
+            }
+            if !new_messages {
+                break;
             }
         }
         curr_time += time_step_millis;

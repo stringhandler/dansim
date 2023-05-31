@@ -6,6 +6,7 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::time::Duration;
 
+#[derive(Debug)]
 pub struct Network {
     connections: HashMap<u32, HashMap<u32, NetworkConnection>>,
     subscriber: Subscriber,
