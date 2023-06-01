@@ -101,8 +101,9 @@ async fn main() {
 
     let mut transaction_generator = TransactionGenerator::new();
     let mut curr_time = 0;
-    let time_step_millis = 100;
-    let num_steps = 20;
+    let time_step_millis = cli.time_per_step.as_millis();
+    let num_steps = cli.num_steps as u128;
+
     loop {
         println!("Time: {:?}", curr_time);
         if let Some(transaction) = transaction_generator.next() {

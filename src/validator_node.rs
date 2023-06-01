@@ -131,13 +131,13 @@ impl ValidatorNode {
 
         let b_dash = self
             .blocks
-            .get(&b_dash_dash.parent_id)
+            .get(&b_dash_dash.justify.block_id)
             .expect("justify parent was missing, should request it")
             .clone();
 
         let b = self
             .blocks
-            .get(&b_dash.parent_id)
+            .get(&b_dash.justify.block_id)
             .expect("justify parent was missing, should request it")
             .clone();
 
@@ -145,20 +145,12 @@ impl ValidatorNode {
         if b_dash.height > self.locked_node.height {
             self.locked_node = b_dash.clone();
         }
+        // Should we not just commit b?
+        // This would exclude dummy blocks from being executed until there is a 3 chain
         if b_dash_dash.parent_id == b_dash.id && b_dash.parent_id == b.id {
             self.on_commit(b.clone());
             self.b_exec = b.clone();
         }
-        // self.blocks.insert(block.id, block.clone());
-        // if self.does_extend(&block, &self.b_leaf) {
-        //     self.b_leaf = block.clone();
-        // }
-        // if self.does_extend(&block, &self.locked_node) {
-        //     self.locked_node = block.clone();
-        // }
-        // if self.does_extend(&block, &self.high_qc.block_id) {
-        //     self.high_qc = block.justify.clone();
-        // }
     }
 
     fn on_commit(&mut self, block: Arc<Block>) {
@@ -170,9 +162,6 @@ impl ValidatorNode {
             self.on_commit(parent.clone());
             self.execute(&block);
         }
-        // if self.does_extend(&block, &self.b_exec) {
-        //     self.b_exec = block.clone();
-        // }
     }
 
     fn execute(&mut self, block: &Block) {
@@ -217,13 +206,14 @@ impl ValidatorNode {
             }
         }
 
+        dbg!(has_new_qc);
         // on_beat
         if has_new_qc
             || self.time_last_proposal_received + self.config.delta.as_millis() < current_time
         {
             if self.is_leader().await
-                && (self.last_proposed_round.is_none()
-                    || self.last_proposed_round.unwrap() < self.hotstuff_round)
+            // && (self.last_proposed_round.is_none()
+            //     || self.last_proposed_round.unwrap() < self.hotstuff_round)
             {
                 return self.on_propose(current_time).await;
             }
@@ -268,10 +258,14 @@ impl ValidatorNode {
         }
     }
     async fn is_leader(&self) -> bool {
-        self.committee_manager
+        dbg!(self.b_leaf.proposed_by);
+        let next_leader = self
+            .committee_manager
             .next_leader(self.shard, self.b_leaf.proposed_by)
-            .await
-            == self.id
+            .await;
+
+        dbg!(next_leader);
+        next_leader == self.id
     }
 
     async fn create_leaf(
