@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 pub struct Stats {
     pub leaves_created: usize,
     pub request_block: usize,
+    pub leader_failures: usize,
 }
 #[derive(Clone)]
 pub struct Subscriber {
@@ -69,11 +70,13 @@ impl Subscriber {
         }
     }
 
-    pub async fn create_vn(&self, vn_id: u32, shard_id: Shard) {
+    pub async fn create_vn(&self, vn_id: u32, shard_id: Shard, latency: u128) {
         let mut res = self
             .client
             .execute(
-                query("CREATE (vn: VN:Node { id: $id })").param("id", format!("node_{}", vn_id)),
+                query("CREATE (vn: VN:Node { id: $id, latency: $latency })")
+                    .param("id", format!("node_{}", vn_id))
+                    .param("latency", latency as u32),
             )
             .await
             .expect("Failed to create vn");
@@ -150,12 +153,19 @@ impl Subscriber {
             .request_block += 1;
     }
 
+    pub async fn on_leader_failure(&self, id: u32) {
+        let mut lock = self.stats.write().await;
+        lock.entry(id)
+            .or_insert_with(|| Stats::default())
+            .leader_failures += 1;
+    }
+
     pub async fn print_stats(&self) {
         let lock = self.stats.read().await;
         for (id, stats) in lock.iter() {
             println!(
-                "Stats for {}: leaves: {} block_requests: {}",
-                id, stats.leaves_created, stats.request_block
+                "Stats for {}: leaves: {} block_requests: {} leader failures: {}",
+                id, stats.leaves_created, stats.request_block, stats.leader_failures
             );
         }
     }

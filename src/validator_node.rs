@@ -19,6 +19,7 @@ pub struct ValidatorNode {
     pub new_tx_mempool: Vec<(u128, Arc<Transaction>)>,
     pub incoming_messages: VecDeque<(u128, Message)>,
     pub current_height: u32,
+    pub current_leader: u32,
     pub last_proposed_round: Option<u32>,
     pub config: Arc<Cli>,
     pub blocks: HashMap<u32, Arc<Block>>,
@@ -33,6 +34,8 @@ pub struct ValidatorNode {
     time_last_proposal_received: u128,
     b_exec: Arc<Block>,
     snoozed_messages: HashMap<u32, Vec<(u128, Message)>>,
+    pub base_latency: u128,
+    new_view_votes: HashMap<u32, Vec<u32>>,
 }
 
 impl ValidatorNode {
@@ -44,6 +47,7 @@ impl ValidatorNode {
         id_provider: IdProvider,
         committee_manager: CommitteeManager,
         subscriber: Subscriber,
+        base_latency: u128,
     ) -> Self {
         let mut blocks = HashMap::new();
         blocks.insert(0, genesis.clone());
@@ -53,6 +57,7 @@ impl ValidatorNode {
             new_tx_mempool: Vec::new(),
             incoming_messages: VecDeque::new(),
             current_height: 0,
+            current_leader: 0,
             last_proposed_round: None,
             config,
             blocks,
@@ -67,14 +72,17 @@ impl ValidatorNode {
             time_last_proposal_received: 0,
             b_exec: genesis.clone(),
             snoozed_messages: HashMap::new(),
+            base_latency,
+            new_view_votes: HashMap::new(),
         }
     }
 
     pub fn print_stats(&self) {
         println!(
-            "VN {} stats: shard:{} height: {} b_leaf: {}, b_exec: {}, locked_node: {}, high_qc: {}",
+            "VN {} stats: shard:{} current_leader: {} height: {} b_leaf: {}, b_exec: {}, locked_node: {}, high_qc: {}",
             self.id,
             self.shard.0,
+            self.current_leader,
             self.current_height,
             self.b_leaf.height,
             self.b_exec.height,
@@ -103,11 +111,17 @@ impl ValidatorNode {
         &mut self,
         block: Arc<Block>,
         current_time: u128,
+        original_message: (u128, Message),
     ) -> Vec<(u32, Message)> {
         let justify_node = match self.blocks.get(&block.justify.block_id) {
             Some(node) => node.clone(),
             None => {
                 self.subscriber.on_request_block(self.id).await;
+
+                self.snoozed_messages
+                    .entry(block.justify.block_id)
+                    .or_insert_with(Vec::new)
+                    .push(original_message);
                 // TODO: Maybe we should ask many nodes for the block
                 // TODO: Maybe we should provide a few blocks with the proposal, depending on space
                 return vec![(
@@ -128,9 +142,6 @@ impl ValidatorNode {
         {
             self.last_voted_height = block.height;
 
-            self.subscriber
-                .on_vote(self.id, block.id, current_time)
-                .await;
             // send vote
             result_messages.push((
                 self.committee_manager
@@ -209,11 +220,11 @@ impl ValidatorNode {
         let incoming_messages = self.incoming_messages.drain(..).collect::<Vec<_>>();
 
         let mut outgoing = vec![];
-        let mut has_new_qc = false;
+        let mut has_new_qc_or_can_propose = false;
         for (time, message) in incoming_messages {
-            match message {
+            match &message {
                 Message::Transaction { tx, .. } => {
-                    self.add_transaction(tx, time);
+                    self.add_transaction(tx.clone(), time);
                 }
                 Message::BlockProposal { block, .. } => {
                     self.time_last_proposal_received = current_time;
@@ -222,7 +233,32 @@ impl ValidatorNode {
                     } else {
                         dbg!("Got a duplicate block proposal");
                     }
-                    outgoing.extend(self.on_receive_proposal(block, current_time).await);
+                    outgoing.extend(
+                        self.on_receive_proposal(block.clone(), current_time, (time, message))
+                            .await,
+                    );
+                }
+                Message::NewView {
+                    height,
+                    high_qc,
+                    from,
+                    ..
+                } => {
+                    self.update_high_qc(high_qc.clone());
+                    if *height >= self.current_height {
+                        // self.current_height = *height;
+                        // self.locked_node = self.high_qc.clone();
+                        // self.on_commit(self.high_qc.clone());
+                        self.new_view_votes
+                            .entry(*height)
+                            .or_insert_with(Vec::new)
+                            .push(*from);
+                        let n = self.committee_manager.get_committee(self.shard).await.len();
+                        if self.new_view_votes.get(height).unwrap().len() > n - ((n - 1) / 3) {
+                            // must propose.
+                            has_new_qc_or_can_propose = true;
+                        }
+                    }
                 }
                 Message::Vote {
                     block_id,
@@ -230,7 +266,9 @@ impl ValidatorNode {
                     vote_by,
                     ..
                 } => {
-                    has_new_qc = self.on_receive_vote(block_id, block_height, vote_by).await;
+                    has_new_qc_or_can_propose = self
+                        .on_receive_vote(*block_id, *block_height, *vote_by, current_time)
+                        .await;
                 }
                 Message::RequestBlock {
                     block_id,
@@ -239,7 +277,7 @@ impl ValidatorNode {
                 } => {
                     if let Some(block) = self.blocks.get(&block_id) {
                         outgoing.push((
-                            request_by,
+                            *request_by,
                             Message::RequestBlockResponse {
                                 id: self.id_provider.next(),
                                 block: block.clone(),
@@ -254,7 +292,8 @@ impl ValidatorNode {
                         // unsnooze messages
                         let messages = self.snoozed_messages.remove(&block.id).unwrap_or_default();
                         for (time, message) in messages {
-                            self.incoming_messages.push_back((time, message));
+                            // self.incoming_messages.push_back((time, message));
+                            outgoing.push((self.id, message));
                         }
                     }
                 }
@@ -262,30 +301,66 @@ impl ValidatorNode {
         }
 
         // on_beat
-        if has_new_qc
-            || self.time_last_proposal_received + self.config.delta.as_millis() <= current_time
+        if has_new_qc_or_can_propose
+        // ||
         {
             dbg!("on beat");
             if self.is_leader().await
             // && (self.last_proposed_round.is_none()
             //     || self.last_proposed_round.unwrap() < self.hotstuff_round)
             {
-                return self.on_propose(current_time).await;
-            } else {
-                outgoing.extend(self.on_next_sync_view().await);
-                self.time_last_proposal_received = current_time;
+                outgoing.extend(self.on_propose(current_time).await);
+            }
+        } else {
+            // propose early to avoid failure
+            if self.time_last_proposal_received + self.config.delta.as_millis() / 2 <= current_time
+            {
+                // if leader, just propose
+                dbg!("on beat");
+                if self.is_leader().await {
+                    outgoing.extend(self.on_propose(current_time).await);
+                }
+            }
+
+            if self.time_last_proposal_received + self.config.delta.as_millis() <= current_time {
+                // if leader, just propose
+                {
+                    outgoing.extend(self.on_next_sync_view().await);
+                    self.time_last_proposal_received = current_time;
+                }
             }
         }
         outgoing
     }
 
-    async fn on_next_sync_view(&self) -> Vec<(u32, Message)> {
+    async fn on_next_sync_view(&mut self) -> Vec<(u32, Message)> {
         // self.hotstuff_round += 1;
+        self.subscriber.on_leader_failure(self.id).await;
         dbg!("on next sync view");
-        vec![]
+        let next_leader = self
+            .committee_manager
+            .next_leader(self.shard, self.current_leader)
+            .await;
+        self.current_leader = next_leader;
+        self.current_height += 1;
+        vec![(
+            next_leader,
+            Message::NewView {
+                id: self.id_provider.next(),
+                height: self.current_height,
+                high_qc: self.high_qc.clone(),
+                from: self.id,
+            },
+        )]
     }
 
-    async fn on_receive_vote(&mut self, block_id: u32, block_height: u32, vote_by: u32) -> bool {
+    async fn on_receive_vote(
+        &mut self,
+        block_id: u32,
+        block_height: u32,
+        vote_by: u32,
+        current_time: u128,
+    ) -> bool {
         if block_height < self.current_height {
             eprintln!("Received a vote for a block that is too old");
             return false;
@@ -293,7 +368,11 @@ impl ValidatorNode {
         let votes = self.votes.entry(block_id).or_insert_with(Vec::new);
         if !votes.contains(&vote_by) {
             votes.push(vote_by);
+            self.subscriber
+                .on_vote(vote_by, block_id, current_time)
+                .await;
         }
+
         let votes = votes.clone();
         let shard_size = self.committee_manager.get_committee(self.shard).await.len();
         if votes.len() >= shard_size - ((shard_size - 1) / 3) {

@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::qc::Qc;
 use crate::transaction::Transaction;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -12,6 +13,12 @@ pub enum Message {
     BlockProposal {
         id: u32,
         block: Arc<Block>,
+    },
+    NewView {
+        id: u32,
+        height: u32,
+        high_qc: Arc<Qc>,
+        from: u32,
     },
     Vote {
         id: u32,
@@ -38,6 +45,7 @@ impl Message {
             Message::Vote { id, .. } => *id,
             Message::RequestBlock { id, .. } => *id,
             Message::RequestBlockResponse { id, .. } => *id,
+            Message::NewView { id, .. } => *id,
         }
     }
 }
@@ -53,6 +61,9 @@ impl Display for Message {
             Message::RequestBlock { id, .. } => write!(f, "Msg:RequestBlock: {}", id),
             Message::RequestBlockResponse { id, .. } => {
                 write!(f, "Msg:RequestBlockResponse: {}", id)
+            }
+            Message::NewView { id, .. } => {
+                write!(f, "Msg:NewView: {}", id)
             }
         }
     }

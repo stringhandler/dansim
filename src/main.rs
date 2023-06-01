@@ -58,6 +58,12 @@ async fn main() {
     }
     for i in 0..cli.num_vns {
         let shard = Shard(i as u32 % cli.num_shards);
+        let latency = Duration::from_millis(
+            rand::thread_rng()
+                .gen_range(cli.min_latency.as_millis() - 1..cli.max_latency.as_millis())
+                .try_into()
+                .unwrap(),
+        );
         let vn = ValidatorNode::new(
             id_provider.next(),
             shard,
@@ -66,15 +72,13 @@ async fn main() {
             id_provider.clone(),
             committee_manager.clone(),
             subscriber.clone(),
+            latency.as_millis(),
         );
-        subscriber.create_vn(vn.id, vn.shard).await;
+        subscriber
+            .create_vn(vn.id, vn.shard, latency.as_millis())
+            .await;
 
-        network.add_connection(
-            indexer.id,
-            vn.id,
-            cli.min_latency.into(),
-            cli.max_latency.into(),
-        );
+        network.add_connection(indexer.id, vn.id, latency, latency);
         committee_manager.add_validator(vn.shard, vn.id).await;
         vns.insert(vn.id, vn);
     }
@@ -92,8 +96,8 @@ async fn main() {
                 network.add_connection(
                     vn.id,
                     vninner.id,
-                    cli.min_latency.into(),
-                    cli.max_latency.into(),
+                    Duration::from_millis((vn.base_latency + vninner.base_latency) as u64),
+                    Duration::from_millis((vn.base_latency + vninner.base_latency) as u64) * 2,
                 );
             }
         }
@@ -143,6 +147,12 @@ async fn main() {
             }
         }
         curr_time += time_step_millis;
+        if curr_time / time_step_millis % (cli.print_stats_every as u128) == 0 {
+            for (_, vn) in &vns {
+                vn.print_stats();
+            }
+            subscriber.print_stats().await;
+        }
         if curr_time > time_step_millis * num_steps {
             break;
         }
