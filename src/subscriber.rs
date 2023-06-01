@@ -3,12 +3,20 @@ use crate::transaction::Shard;
 use neo4rs::query;
 use neo4rs::Graph;
 use neo4rs::Node;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
+#[derive(Debug, Default)]
+pub struct Stats {
+    pub leaves_created: usize,
+    pub request_block: usize,
+}
 #[derive(Clone)]
 pub struct Subscriber {
     client: Arc<Graph>,
+    stats: Arc<RwLock<HashMap<u32, Stats>>>,
 }
 
 impl Subscriber {
@@ -20,7 +28,7 @@ impl Subscriber {
             .param("height", block.height)
             .param("proposed_by", block.proposed_by)).await.expect("Failed to create block");
         while let Ok(Some(row)) = res.next().await {
-            println!("leaf created");
+            // println!("leaf created");
         }
 
         let mut res = self.client.execute(query("MATCH (b: Block {id: $id}), (v: VN { id: $vn_id}) CREATE (v)-[n:PROPOSES { t:  $time}]->(b) RETURN n")
@@ -28,8 +36,13 @@ impl Subscriber {
             .param("time", time as u32)
             .param("vn_id", format!("node_{}", block.proposed_by))).await.expect("Failed to create block");
         while let Ok(Some(row)) = res.next().await {
-            println!("rel created");
+            // println!("rel created");
         }
+
+        let mut lock = self.stats.write().await;
+        lock.entry(block.proposed_by)
+            .or_insert_with(|| Stats::default())
+            .leaves_created += 1;
     }
 
     pub async fn on_vote(&self, vn_id: u32, block_id: u32, t: u128) {
@@ -39,7 +52,7 @@ impl Subscriber {
             .param("vn_id", format!("node_{}", vn_id))).await.expect("Failed to create block");
 
         while let Ok(Some(row)) = res.next().await {
-            println!("vote created");
+            // println!("vote created");
         }
     }
 
@@ -52,7 +65,7 @@ impl Subscriber {
             .await
             .expect("Failed to create shard");
         while let Ok(Some(row)) = res.next().await {
-            println!("shard created");
+            // println!("shard created");
         }
     }
 
@@ -65,9 +78,8 @@ impl Subscriber {
             .await
             .expect("Failed to create vn");
         while let Ok(Some(row)) = res.next().await {
-            println!("vn created");
+            // println!("vn created");
         }
-        dbg!(shard_id.0);
         let mut res = self.client
             .execute(
                 query("MATCH (vn: VN { id: $vn_id}), (s:Shard { id: $id })  CREATE (vn)-[n:BELONGS_TO]->(s) RETURN n")
@@ -78,7 +90,7 @@ impl Subscriber {
             .expect("Could not link to shard");
 
         while let Ok(Some(row)) = res.next().await {
-            println!("rel created");
+            // println!("rel created");
         }
     }
 
@@ -91,7 +103,7 @@ impl Subscriber {
             .await
             .expect("Failed to create indexer");
         while let Ok(Some(row)) = res.next().await {
-            println!("indexer created");
+            // println!("indexer created");
         }
     }
 
@@ -115,7 +127,7 @@ impl Subscriber {
             .await
             .expect("Failed to create message");
         while let Ok(Some(row)) = res.next().await {
-            println!("message created");
+            // println!("message created");
         }
 
         let mut res = self.client.execute(
@@ -127,7 +139,24 @@ impl Subscriber {
         ).await.expect("Failed to create message");
 
         while let Ok(Some(row)) = res.next().await {
-            println!("message created");
+            // println!("message created");
+        }
+    }
+
+    pub async fn on_request_block(&self, id: u32) {
+        let mut lock = self.stats.write().await;
+        lock.entry(id)
+            .or_insert_with(|| Stats::default())
+            .request_block += 1;
+    }
+
+    pub async fn print_stats(&self) {
+        let lock = self.stats.read().await;
+        for (id, stats) in lock.iter() {
+            println!(
+                "Stats for {}: leaves: {} block_requests: {}",
+                id, stats.leaves_created, stats.request_block
+            );
         }
     }
 }
@@ -156,6 +185,9 @@ impl Subscriber {
             println!("cleared");
         }
 
-        Self { client }
+        Self {
+            client,
+            stats: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 }

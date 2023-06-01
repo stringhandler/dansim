@@ -19,6 +19,15 @@ pub enum Message {
         block_height: u32,
         vote_by: u32,
     },
+    RequestBlock {
+        id: u32,
+        block_id: u32,
+        request_by: u32,
+    },
+    RequestBlockResponse {
+        id: u32,
+        block: Arc<Block>,
+    },
 }
 
 impl Message {
@@ -27,6 +36,8 @@ impl Message {
             Message::Transaction { id, .. } => *id,
             Message::BlockProposal { id, .. } => *id,
             Message::Vote { id, .. } => *id,
+            Message::RequestBlock { id, .. } => *id,
+            Message::RequestBlockResponse { id, .. } => *id,
         }
     }
 }
@@ -39,6 +50,10 @@ impl Display for Message {
                 write!(f, "Msg:BlockProposal: {} Block:{}", id, block.id)
             }
             Message::Vote { id, .. } => write!(f, "Msg:Vote: {}", id),
+            Message::RequestBlock { id, .. } => write!(f, "Msg:RequestBlock: {}", id),
+            Message::RequestBlockResponse { id, .. } => {
+                write!(f, "Msg:RequestBlockResponse: {}", id)
+            }
         }
     }
 }

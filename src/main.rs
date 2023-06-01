@@ -147,4 +147,10 @@ async fn main() {
             break;
         }
     }
+
+    for (_, vn) in &vns {
+        vn.print_stats();
+    }
+
+    subscriber.print_stats().await;
 }
