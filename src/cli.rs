@@ -17,11 +17,14 @@ pub struct Cli {
     #[clap(long, default_value = "2000ms")]
     pub delta: humantime::Duration,
 
-    #[clap(long, default_value = "400")]
+    #[clap(long, default_value = "40")]
     pub num_steps: usize,
     #[clap(long, default_value = "100ms")]
     pub time_per_step: humantime::Duration,
 
     #[clap(long, default_value = "1")]
     pub print_stats_every: usize,
+
+    #[clap(long, default_value = "1")]
+    pub max_tx_per_step_per_block: usize,
 }

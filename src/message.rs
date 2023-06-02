@@ -55,15 +55,24 @@ impl Display for Message {
         match self {
             Message::Transaction { id, tx } => write!(f, "Msg:Transaction: {}:{:?}", id, tx),
             Message::BlockProposal { id, block } => {
-                write!(f, "Msg:BlockProposal: {} Block:{}", id, block.id)
+                write!(
+                    f,
+                    "Msg:BlockProposal: {} Block:{} shard: {} height:{} prep:{} precom:{}",
+                    id,
+                    block.id,
+                    block.shard.0,
+                    block.height,
+                    block.prepare_txs.len(),
+                    block.precommit_txs.len()
+                )
             }
             Message::Vote { id, .. } => write!(f, "Msg:Vote: {}", id),
             Message::RequestBlock { id, .. } => write!(f, "Msg:RequestBlock: {}", id),
             Message::RequestBlockResponse { id, .. } => {
                 write!(f, "Msg:RequestBlockResponse: {}", id)
             }
-            Message::NewView { id, .. } => {
-                write!(f, "Msg:NewView: {}", id)
+            Message::NewView { id, from, .. } => {
+                write!(f, "Msg:NewView: {} from: {}", id, from)
             }
         }
     }

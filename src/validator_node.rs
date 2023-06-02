@@ -9,14 +9,13 @@ use crate::subscriber::Subscriber;
 use crate::transaction::{Shard, Transaction};
 use itertools::Itertools;
 use log::*;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct ValidatorNode {
     pub id: u32,
     pub shard: Shard,
-    pub new_tx_mempool: Vec<(u128, Arc<Transaction>)>,
     pub incoming_messages: VecDeque<(u128, Message)>,
     pub current_height: u32,
     pub current_leader: u32,
@@ -36,6 +35,13 @@ pub struct ValidatorNode {
     snoozed_messages: HashMap<u32, Vec<(u128, Message)>>,
     pub base_latency: u128,
     new_view_votes: HashMap<u32, Vec<u32>>,
+    // Mempools
+    pub new_tx_mempool: BinaryHeap<Arc<Transaction>>,
+    pub waiting_prepared_mempool: Vec<(u128, Arc<Transaction>)>,
+    pub ready_prepared_mempool: BinaryHeap<Arc<Transaction>>,
+    pub waiting_pre_committed_mempool: Vec<(u128, Arc<Transaction>)>,
+    pub ready_pre_committed_mempool: BinaryHeap<Arc<Transaction>>,
+    // TODO: I don't think I need a committed mempool....
 }
 
 impl ValidatorNode {
@@ -54,7 +60,10 @@ impl ValidatorNode {
         Self {
             id,
             shard,
-            new_tx_mempool: Vec::new(),
+            new_tx_mempool: BinaryHeap::new(),
+            waiting_prepared_mempool: vec![],
+            ready_prepared_mempool: BinaryHeap::new(),
+            waiting_pre_committed_mempool: vec![],
             incoming_messages: VecDeque::new(),
             current_height: 0,
             current_leader: 0,
@@ -74,12 +83,13 @@ impl ValidatorNode {
             snoozed_messages: HashMap::new(),
             base_latency,
             new_view_votes: HashMap::new(),
+            ready_pre_committed_mempool: BinaryHeap::new(),
         }
     }
 
     pub fn print_stats(&self) {
         println!(
-            "VN {} stats: shard:{} current_leader: {} height: {} b_leaf: {}, b_exec: {}, locked_node: {}, high_qc: {}",
+            "VN {} stats: shard:{} current_leader: {} height: {} b_leaf: {}, b_exec: {}, locked_node: {}, high_qc: {}, new_tx: {} prepare_w: {} prep_r:{}, precomm_w: {}, precom_r:{}",
             self.id,
             self.shard.0,
             self.current_leader,
@@ -87,14 +97,31 @@ impl ValidatorNode {
             self.b_leaf.height,
             self.b_exec.height,
             self.locked_node.height,
-            self.high_qc.block_height
+            self.high_qc.block_height,
+            self.new_tx_mempool.len(),
+            self.waiting_prepared_mempool.len(),
+            self.ready_prepared_mempool.len(),
+            self.waiting_pre_committed_mempool.len(),
+            self.ready_pre_committed_mempool.len()
         );
+
+        for tx in self.new_tx_mempool.iter() {
+            println!("new tx: {:?}", tx);
+        }
+        for tx in self.waiting_prepared_mempool.iter() {
+            println!("waiting prep tx: {:?}", tx);
+        }
+        for tx in self.ready_prepared_mempool.iter() {
+            println!("ready prep tx: {:?}", tx);
+        }
+        for tx in self.waiting_pre_committed_mempool.iter() {
+            println!("waiting precom tx: {:?}", tx);
+        }
     }
 
     pub fn add_transaction(&mut self, transaction: Arc<Transaction>, at_time: u128) {
         if transaction.shards.contains(&self.shard) {
-            dbg!("adding to mempool");
-            self.new_tx_mempool.push((at_time, transaction));
+            self.new_tx_mempool.push(transaction);
         } else {
             eprintln!(
                 "Transaction {:?} does not belong to shard {:?}",
@@ -155,19 +182,76 @@ impl ValidatorNode {
                 },
             ));
 
-            self.update_blocks(block);
+            self.update_blocks(block, current_time);
         }
 
         result_messages
     }
 
-    fn update_blocks(&mut self, block: Arc<Block>) {
+    fn update_blocks(&mut self, block: Arc<Block>, current_time: u128) {
         self.current_height = block.height;
+
         let b_dash_dash = self
             .blocks
             .get(&block.justify.block_id)
             .expect("justify parent was missing, should request it")
             .clone();
+
+        // TODO: it's not clear whether we should
+        // commit foreign consensus blocks here or wait for a 3 chain locally.
+        // for now, I'm going to assume it's fine to commit them here
+        // ======= Prepare ======
+        for tx in &b_dash_dash.prepare_txs {
+            // local cerb
+            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
+                self.ready_prepared_mempool.push(tx.clone());
+            } else {
+                // remote cerb
+                self.waiting_prepared_mempool
+                    .push((current_time, tx.clone()));
+            }
+        }
+
+        //TODO: should apply all the txs in the previous blocks
+        let new_tx: Vec<Arc<Transaction>> = self.new_tx_mempool.drain().collect();
+        for tx in new_tx {
+            if !b_dash_dash.prepare_txs.contains(&tx) {
+                self.new_tx_mempool.push(tx);
+            }
+        }
+
+        // ==== precomitted =======
+        for tx in &b_dash_dash.precommit_txs {
+            // local cerb
+            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
+                self.ready_pre_committed_mempool.push(tx.clone());
+            } else {
+                // remote cerb
+                self.waiting_pre_committed_mempool
+                    .push((current_time, tx.clone()));
+            }
+        }
+
+        let preps: Vec<Arc<Transaction>> = self.ready_prepared_mempool.drain().collect();
+        for tx in preps {
+            if !b_dash_dash.precommit_txs.contains(&tx) {
+                self.ready_prepared_mempool.push(tx);
+            }
+        }
+
+        let waiting: Vec<(u128, Arc<Transaction>)> =
+            self.waiting_prepared_mempool.drain(..).collect();
+        for (time, tx) in waiting {
+            if !b_dash_dash.precommit_txs.contains(&tx) {
+                self.waiting_prepared_mempool.push((time, tx));
+            }
+        }
+
+        // ====== Committed ...... Can save to DB ======
+
+        for tx in &b_dash_dash.commit_txs {
+            println!("APPLIED TX: {:?}", tx);
+        }
 
         let b_dash = self
             .blocks
@@ -322,7 +406,10 @@ impl ValidatorNode {
                 }
             }
 
-            if self.time_last_proposal_received + self.config.delta.as_millis() <= current_time {
+            // Send on start up to let the leader know we are here
+            if self.current_height == 0
+                || self.time_last_proposal_received + self.config.delta.as_millis() <= current_time
+            {
                 // if leader, just propose
                 {
                     outgoing.extend(self.on_next_sync_view().await);
@@ -334,8 +421,10 @@ impl ValidatorNode {
     }
 
     async fn on_next_sync_view(&mut self) -> Vec<(u32, Message)> {
-        // self.hotstuff_round += 1;
-        self.subscriber.on_leader_failure(self.id).await;
+        // Exclude the first set up
+        if self.current_height != 0 {
+            self.subscriber.on_leader_failure(self.id).await;
+        }
         dbg!("on next sync view");
         let next_leader = self
             .committee_manager
@@ -408,19 +497,65 @@ impl ValidatorNode {
     }
 
     async fn create_leaf(
-        &self,
+        &mut self,
         parent_id: u32,
-        transactions: Vec<Arc<Transaction>>,
         qc: Arc<Qc>,
         height: u32,
         current_time: u128,
     ) -> Arc<Block> {
+        let mut prepare_txs = vec![];
+        let mut precommit_txs = vec![];
+        let mut commit_txs = vec![];
+        // The transactions in the QC have not yet been moved to their new pools, so we need to make sure we don't
+        // add them again here.
+
+        let qc_block = self.blocks.get(&qc.block_id).unwrap();
+
+        loop {
+            if prepare_txs.len() < self.config.max_tx_per_step_per_block {
+                if let Some(transaction) = self.new_tx_mempool.pop() {
+                    if !qc_block.prepare_txs.contains(&transaction) {
+                        prepare_txs.push(transaction);
+                    }
+                }
+            }
+            if precommit_txs.len() < self.config.max_tx_per_step_per_block {
+                if let Some(tx) = self.ready_prepared_mempool.pop() {
+                    if !qc_block.precommit_txs.contains(&tx) {
+                        precommit_txs.push(tx);
+                    }
+                }
+            }
+            if commit_txs.len() < self.config.max_tx_per_step_per_block {
+                if let Some(tx) = self.ready_pre_committed_mempool.pop() {
+                    if !qc_block.commit_txs.contains(&tx) {
+                        commit_txs.push(tx);
+                    }
+                }
+            }
+
+            if (prepare_txs.len() == self.config.max_tx_per_step_per_block
+                || self.new_tx_mempool.is_empty())
+                && (precommit_txs.len() == self.config.max_tx_per_step_per_block
+                    || self.ready_prepared_mempool.is_empty())
+                && (commit_txs.len() == self.config.max_tx_per_step_per_block
+                    || self.ready_pre_committed_mempool.is_empty())
+            {
+                break;
+            }
+        }
+        // let prepare_txs = self.new_tx_mempool.pop()
+        // let precommit_txs = self.ready_prepare_mempool.drain(..self.config.max_tx_per_step_per_block).collect();
         let block = Arc::new(Block::new(
             self.id_provider.next(),
             parent_id,
+            self.shard,
             qc,
             height,
             self.id,
+            prepare_txs,
+            precommit_txs,
+            commit_txs,
         ));
         self.subscriber
             .on_create_leaf(block.clone(), current_time)
@@ -429,32 +564,14 @@ impl ValidatorNode {
     }
 
     async fn on_propose(&mut self, current_time: u128) -> Vec<(u32, Message)> {
-        let transactions = self
-            .new_tx_mempool
-            .iter()
-            .take(self.config.max_block_size)
-            .map(|(_, transaction)| transaction.clone())
-            .collect::<Vec<_>>();
-        println!(
-            "Node {:?} proposed transactions {:?}",
-            self.id, transactions
-        );
-
         let high_qc = self.high_qc.clone();
         // if high_qc.view number > generic_qc then self.generic_qc = high_qc
 
         let mut outgoing = vec![];
 
-        let involved_shards: Vec<Shard> = transactions
-            .iter()
-            .map(|transaction| transaction.shards.clone())
-            .flatten()
-            .unique()
-            .collect();
         let block = self
             .create_leaf(
                 self.b_leaf.id,
-                transactions,
                 high_qc,
                 self.b_leaf.height + 1,
                 current_time,

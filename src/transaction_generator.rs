@@ -1,22 +1,29 @@
+use crate::id_provider::IdProvider;
 use crate::transaction::{Shard, Transaction};
 
 pub struct TransactionGenerator {
+    id_provider: IdProvider,
     static_transactions: Vec<Transaction>,
-    current_index: usize
+    current_index: usize,
 }
 
 impl TransactionGenerator {
-    pub fn new() -> Self {
+    pub fn new(id_provider: IdProvider) -> Self {
         Self {
-            static_transactions : vec![
+            static_transactions: vec![
                 Transaction {
-                    shards: vec![Shard(0), Shard(1)]
+                    id: id_provider.next(),
+                    shards: vec![Shard(0), Shard(1)],
+                    effective_fee: 1,
                 },
                 Transaction {
-                    shards: vec![Shard(0)]
-                }
+                    id: id_provider.next(),
+                    shards: vec![Shard(0)],
+                    effective_fee: 2,
+                },
             ],
-            current_index : 0
+            id_provider,
+            current_index: 0,
         }
     }
 

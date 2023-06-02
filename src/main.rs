@@ -58,12 +58,16 @@ async fn main() {
     }
     for i in 0..cli.num_vns {
         let shard = Shard(i as u32 % cli.num_shards);
-        let latency = Duration::from_millis(
-            rand::thread_rng()
-                .gen_range(cli.min_latency.as_millis() - 1..cli.max_latency.as_millis())
-                .try_into()
-                .unwrap(),
-        );
+        let latency = if cli.min_latency.as_millis() == cli.max_latency.as_millis() {
+            Duration::from_millis(cli.min_latency.as_millis().try_into().unwrap())
+        } else {
+            Duration::from_millis(
+                rand::thread_rng()
+                    .gen_range(cli.min_latency.as_millis()..cli.max_latency.as_millis())
+                    .try_into()
+                    .unwrap(),
+            )
+        };
         let vn = ValidatorNode::new(
             id_provider.next(),
             shard,
@@ -103,7 +107,7 @@ async fn main() {
         }
     }
 
-    let mut transaction_generator = TransactionGenerator::new();
+    let mut transaction_generator = TransactionGenerator::new(id_provider.clone());
     let mut curr_time = 0;
     let time_step_millis = cli.time_per_step.as_millis();
     let num_steps = cli.num_steps as u128;
