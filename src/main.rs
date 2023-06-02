@@ -59,14 +59,9 @@ async fn main() {
     for i in 0..cli.num_vns {
         let shard = Shard(i as u32 % cli.num_shards);
         let latency = if cli.min_latency.as_millis() == cli.max_latency.as_millis() {
-            Duration::from_millis(cli.min_latency.as_millis().try_into().unwrap())
+            cli.min_latency.as_millis()
         } else {
-            Duration::from_millis(
-                rand::thread_rng()
-                    .gen_range(cli.min_latency.as_millis()..cli.max_latency.as_millis())
-                    .try_into()
-                    .unwrap(),
-            )
+            rand::thread_rng().gen_range(cli.min_latency.as_millis()..cli.max_latency.as_millis())
         };
         let vn = ValidatorNode::new(
             id_provider.next(),
@@ -76,11 +71,9 @@ async fn main() {
             id_provider.clone(),
             committee_manager.clone(),
             subscriber.clone(),
-            latency.as_millis(),
+            latency,
         );
-        subscriber
-            .create_vn(vn.id, vn.shard, latency.as_millis())
-            .await;
+        subscriber.create_vn(vn.id, vn.shard, latency).await;
 
         network.add_connection(indexer.id, vn.id, latency, latency);
         committee_manager.add_validator(vn.shard, vn.id).await;
@@ -90,24 +83,20 @@ async fn main() {
     for (_, vn) in &vns {
         for (_, vninner) in &vns {
             if vn.id == vninner.id {
-                network.add_connection(
-                    vn.id,
-                    vninner.id,
-                    Duration::from_millis(0),
-                    Duration::from_millis(0),
-                );
+                network.add_connection(vn.id, vninner.id, 0, 0);
             } else {
                 network.add_connection(
                     vn.id,
                     vninner.id,
-                    Duration::from_millis((vn.base_latency + vninner.base_latency) as u64),
-                    Duration::from_millis((vn.base_latency + vninner.base_latency) as u64) * 2,
+                    (vn.base_latency + vninner.base_latency),
+                    (vn.base_latency + vninner.base_latency),
                 );
             }
         }
     }
 
-    let mut transaction_generator = TransactionGenerator::new(id_provider.clone());
+    let mut transaction_generator =
+        TransactionGenerator::new(id_provider.clone(), cli.num_transactions, cli.clone());
     let mut curr_time = 0;
     let time_step_millis = cli.time_per_step.as_millis();
     let num_steps = cli.num_steps as u128;
@@ -117,7 +106,7 @@ async fn main() {
         if let Some(transaction) = transaction_generator.next() {
             let transaction = Arc::new(transaction);
             subscriber
-                .on_transaction_queued(transaction.id, curr_time)
+                .on_transaction_queued(transaction.id, curr_time, &transaction)
                 .await;
             println!("Transaction: {:?}", transaction);
             for (vn_id, _) in &vns {

@@ -20,20 +20,12 @@ impl Network {
         }
     }
 
-    pub fn add_connection(
-        &mut self,
-        from: u32,
-        to: u32,
-        min_latency: Duration,
-        max_latency: Duration,
-    ) {
+    pub fn add_connection(&mut self, from: u32, to: u32, min_latency: u128, max_latency: u128) {
         let latency = if min_latency != max_latency {
-            Duration::from_millis(
-                rand::thread_rng()
-                    .gen_range(min_latency.as_millis()..max_latency.as_millis())
-                    .try_into()
-                    .unwrap(),
-            )
+            rand::thread_rng()
+                .gen_range(min_latency..max_latency)
+                .try_into()
+                .unwrap()
         } else {
             min_latency
         };

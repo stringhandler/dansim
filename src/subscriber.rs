@@ -1,6 +1,6 @@
 use crate::block::Block;
 use crate::qc::Qc;
-use crate::transaction::Shard;
+use crate::transaction::{Shard, Transaction};
 use neo4rs::query;
 use neo4rs::Graph;
 use neo4rs::Node;
@@ -115,18 +115,38 @@ impl Subscriber {
         }
     }
 
-    pub async fn on_transaction_queued(&self, tx_id: u32, t: u128) {
+    pub async fn on_transaction_queued(&self, tx_id: u32, t: u128, tx: &Transaction) {
         self.client
             .execute(
-                query("CREATE (t: Transaction {id: $tx_id, t: $t})")
+                query("CREATE (t: Transaction {id: $tx_id, t: $t, shards: $shards})")
                     .param("tx_id", tx_id)
-                    .param("t", t as u32),
+                    .param("t", t as u32)
+                    .param(
+                        "shards",
+                        tx.shards
+                            .iter()
+                            .map(|s| s.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    ),
             )
             .await
             .expect("Failed to create block")
             .next()
             .await
             .expect("Failed to create tx");
+    }
+
+    pub async fn on_transaction_moved_to_prepare_ready(
+        &self,
+        tx_id: u32,
+        in_vn: u32,
+        t: u128,
+        in_block: u32,
+    ) {
+        self.client.execute(query("MATCH (t: Transaction {id: $tx_id}), (b: Block {id: $in_block}) CREATE (t)-[n: MOVES_TO_PREPARE_READY {t:  $t}]->(b) RETURN n").param("tx_id", tx_id)
+            .param("t", t as u32)
+            .param("in_block", in_block)).await.expect("Failed to create tx move to ready").next().await.expect("Failed to create rel");
     }
 
     pub async fn on_qc_created(&self, qc_id: u32, t: u128, block_id: u32) {

@@ -37,9 +37,9 @@ pub struct ValidatorNode {
     new_view_votes: HashMap<u32, Vec<u32>>,
     // Mempools
     pub new_tx_mempool: BinaryHeap<Arc<Transaction>>,
-    pub waiting_prepared_mempool: Vec<(u128, Arc<Transaction>)>,
+    pub waiting_prepared_mempool: HashMap<u32, (Arc<Transaction>, HashMap<Shard, Arc<Block>>)>,
     pub ready_prepared_mempool: BinaryHeap<Arc<Transaction>>,
-    pub waiting_pre_committed_mempool: Vec<(u128, Arc<Transaction>)>,
+    pub waiting_pre_committed_mempool: HashMap<u32, (Arc<Transaction>, HashMap<Shard, Arc<Block>>)>,
     pub ready_pre_committed_mempool: BinaryHeap<Arc<Transaction>>,
     // TODO: I don't think I need a committed mempool....
 }
@@ -61,9 +61,9 @@ impl ValidatorNode {
             id,
             shard,
             new_tx_mempool: BinaryHeap::new(),
-            waiting_prepared_mempool: vec![],
+            waiting_prepared_mempool: HashMap::new(),
             ready_prepared_mempool: BinaryHeap::new(),
-            waiting_pre_committed_mempool: vec![],
+            waiting_pre_committed_mempool: HashMap::new(),
             incoming_messages: VecDeque::new(),
             current_height: 0,
             current_leader: 0,
@@ -105,18 +105,18 @@ impl ValidatorNode {
             self.ready_pre_committed_mempool.len()
         );
 
-        for tx in self.new_tx_mempool.iter() {
-            println!("new tx: {:?}", tx);
-        }
-        for tx in self.waiting_prepared_mempool.iter() {
-            println!("waiting prep tx: {:?}", tx);
-        }
-        for tx in self.ready_prepared_mempool.iter() {
-            println!("ready prep tx: {:?}", tx);
-        }
-        for tx in self.waiting_pre_committed_mempool.iter() {
-            println!("waiting precom tx: {:?}", tx);
-        }
+        // for tx in self.new_tx_mempool.iter() {
+        //     println!("new tx: {:?}", tx);
+        // }
+        // for tx in self.waiting_prepared_mempool.iter() {
+        //     println!("waiting prep tx: {:?}", tx);
+        // }
+        // for tx in self.ready_prepared_mempool.iter() {
+        //     println!("ready prep tx: {:?}", tx);
+        // }
+        // for tx in self.waiting_pre_committed_mempool.iter() {
+        //     println!("waiting precom tx: {:?}", tx);
+        // }
     }
 
     pub fn add_transaction(&mut self, transaction: Arc<Transaction>, at_time: u128) {
@@ -140,49 +140,90 @@ impl ValidatorNode {
         current_time: u128,
         original_message: (u128, Message),
     ) -> Vec<(u32, Message)> {
-        let justify_node = match self.blocks.get(&block.justify.block_id) {
-            Some(node) => node.clone(),
-            None => {
-                self.subscriber.on_request_block(self.id).await;
-
-                self.snoozed_messages
-                    .entry(block.justify.block_id)
-                    .or_insert_with(Vec::new)
-                    .push(original_message);
-                // TODO: Maybe we should ask many nodes for the block
-                // TODO: Maybe we should provide a few blocks with the proposal, depending on space
-                return vec![(
-                    block.proposed_by,
-                    Message::RequestBlock {
-                        id: self.id_provider.next(),
-                        block_id: block.justify.block_id,
-                        request_by: self.id,
-                    },
-                )];
-            }
-        };
-
         let mut result_messages = vec![];
-        if block.height > self.last_voted_height
-            && (self.does_extend(&block, &self.locked_node)
-                || justify_node.height > self.locked_node.height)
-        {
-            self.last_voted_height = block.height;
+        if block.shard == self.shard {
+            let justify_node = match self.blocks.get(&block.justify.block_id) {
+                Some(node) => node.clone(),
+                None => {
+                    self.subscriber.on_request_block(self.id).await;
 
-            // send vote
-            result_messages.push((
-                self.committee_manager
-                    .next_leader(self.shard, block.proposed_by)
-                    .await,
-                Message::Vote {
-                    id: self.id_provider.next(),
-                    block_id: block.id,
-                    block_height: block.height,
-                    vote_by: self.id,
-                },
-            ));
+                    self.snoozed_messages
+                        .entry(block.justify.block_id)
+                        .or_insert_with(Vec::new)
+                        .push(original_message);
+                    // TODO: Maybe we should ask many nodes for the block
+                    // TODO: Maybe we should provide a few blocks with the proposal, depending on space
+                    return vec![(
+                        block.proposed_by,
+                        Message::RequestBlock {
+                            id: self.id_provider.next(),
+                            block_id: block.justify.block_id,
+                            request_by: self.id,
+                        },
+                    )];
+                }
+            };
 
-            self.update_blocks(block, current_time).await;
+            if block.height > self.last_voted_height
+                && (self.does_extend(&block, &self.locked_node)
+                    || justify_node.height > self.locked_node.height)
+            {
+                self.last_voted_height = block.height;
+
+                // send vote
+                result_messages.push((
+                    self.committee_manager
+                        .next_leader(self.shard, block.proposed_by)
+                        .await,
+                    Message::Vote {
+                        id: self.id_provider.next(),
+                        block_id: block.id,
+                        block_height: block.height,
+                        vote_by: self.id,
+                    },
+                ));
+
+                self.update_blocks(block, current_time).await;
+            }
+        } else {
+            dbg!("Foreignly");
+            // Foreign committee block
+            for tx in &block.prepare_txs {
+                // check if we have a prepare waiting
+                let mut must_remove = false;
+                if let Some((tx, shard_nodes)) = self.waiting_prepared_mempool.get_mut(&tx.id) {
+                    if !shard_nodes.contains_key(&block.shard) {
+                        dbg!("Added vote");
+                        shard_nodes.insert(block.shard, block.clone());
+                        // check if we can move it to ready
+                        if shard_nodes.len() == tx.shards.len() {
+                            self.ready_prepared_mempool.push(tx.clone());
+                            must_remove = true;
+                            // self.waiting_prepared_mempool.remove(&tx.id);
+                            // TODO: attach all nodes to the tx
+                            self.subscriber.on_transaction_moved_to_prepare_ready(
+                                tx.id,
+                                self.id,
+                                current_time,
+                                block.id,
+                            );
+                        }
+                    }
+                } else {
+                    // add it... it will still need to be prepared locally, so leave it in the new_tx pool as well.
+                    self.waiting_prepared_mempool.insert(
+                        tx.id,
+                        (
+                            tx.clone(),
+                            [(block.shard, block.clone())].iter().cloned().collect(),
+                        ),
+                    );
+                }
+
+                if must_remove {
+                    self.waiting_prepared_mempool.remove(&tx.id);
+                }
+            }
         }
 
         result_messages
@@ -240,11 +281,28 @@ impl ValidatorNode {
                     .await;
             } else {
                 // remote cerb
-                self.waiting_prepared_mempool
-                    .push((current_time, tx.clone()));
-                self.subscriber
-                    .on_transaction_prepared_waiting(tx.id, self.shard, qc.clone(), current_time)
-                    .await;
+                let entry = self
+                    .waiting_prepared_mempool
+                    .entry(tx.id)
+                    .or_insert_with(|| (tx.clone(), HashMap::new()));
+                entry.1.insert(self.shard, justified_node.clone());
+                // move to ready if we have all the shards
+                if entry.1.len() == tx.shards.len() {
+                    self.ready_prepared_mempool.push(tx.clone());
+                    self.waiting_prepared_mempool.remove(&tx.id);
+                    self.subscriber
+                        .on_transaction_prepared_ready(tx.id, self.shard, qc.clone(), current_time)
+                        .await;
+                } else {
+                    self.subscriber
+                        .on_transaction_prepared_waiting(
+                            tx.id,
+                            self.shard,
+                            qc.clone(),
+                            current_time,
+                        )
+                        .await;
+                }
             }
         }
 
@@ -266,11 +324,34 @@ impl ValidatorNode {
                     .await;
             } else {
                 // remote cerb
-                self.waiting_pre_committed_mempool
-                    .push((current_time, tx.clone()));
-                self.subscriber
-                    .on_transaction_precommit_waiting(tx.id, self.shard, qc.clone(), current_time)
-                    .await;
+
+                // self.waiting_pre_committed_mempool
+                //     .push((current_time, tx.clone()));
+                // self.subscriber
+                //     .on_transaction_precommit_waiting(tx.id, self.shard, qc.clone(), current_time)
+                //     .await;
+                let entry = self
+                    .waiting_pre_committed_mempool
+                    .entry(tx.id)
+                    .or_insert_with(|| (tx.clone(), HashMap::new()));
+                entry.1.insert(self.shard, justified_node.clone());
+                // move to ready if we have all the shards
+                if entry.1.len() == tx.shards.len() {
+                    self.ready_pre_committed_mempool.push(tx.clone());
+                    self.waiting_pre_committed_mempool.remove(&tx.id);
+                    self.subscriber
+                        .on_transaction_precommit_ready(tx.id, self.shard, qc.clone(), current_time)
+                        .await;
+                } else {
+                    self.subscriber
+                        .on_transaction_precommit_waiting(
+                            tx.id,
+                            self.shard,
+                            qc.clone(),
+                            current_time,
+                        )
+                        .await;
+                }
             }
         }
 
@@ -281,13 +362,19 @@ impl ValidatorNode {
             }
         }
 
-        let waiting: Vec<(u128, Arc<Transaction>)> =
-            self.waiting_prepared_mempool.drain(..).collect();
-        for (time, tx) in waiting {
-            if !justified_node.precommit_txs.contains(&tx) {
-                self.waiting_prepared_mempool.push((time, tx));
+        for pre_comms in &justified_node.precommit_txs {
+            if self.waiting_prepared_mempool.contains_key(&pre_comms.id) {
+                self.waiting_prepared_mempool.remove(&pre_comms.id);
             }
         }
+
+        // let waiting: Vec<(u128, Arc<Transaction>)> =
+        //     self.waiting_prepared_mempool.drain(..).collect();
+        // for (time, tx) in waiting {
+        //     if !justified_node.precommit_txs.contains(&tx) {
+        //         self.waiting_prepared_mempool.push((time, tx));
+        //     }
+        // }
 
         // ====== Committed ...... Can save to DB ======
 
@@ -305,11 +392,12 @@ impl ValidatorNode {
             }
         }
 
-        let waiting: Vec<(u128, Arc<Transaction>)> =
-            self.waiting_pre_committed_mempool.drain(..).collect();
-        for (time, tx) in waiting {
-            if !justified_node.commit_txs.contains(&tx) {
-                self.waiting_pre_committed_mempool.push((time, tx));
+        for pre_comms in &justified_node.commit_txs {
+            if self
+                .waiting_pre_committed_mempool
+                .contains_key(&pre_comms.id)
+            {
+                self.waiting_pre_committed_mempool.remove(&pre_comms.id);
             }
         }
     }
@@ -462,7 +550,6 @@ impl ValidatorNode {
         if self.current_height != 0 {
             self.subscriber.on_leader_failure(self.id).await;
         }
-        dbg!("on next sync view");
         let next_leader = self
             .committee_manager
             .next_leader(self.shard, self.current_leader)
@@ -629,25 +716,24 @@ impl ValidatorNode {
             .await;
         self.last_proposed_round = Some(self.current_height);
 
-        // TODO: Send to other committees
+        let involved_shards = block.involved_shards();
         // send to all nodes.
-        // for shard in involved_shards {
-        //     if shard == self.shard {
-        //         skip our own shard, because everyone in this committee will get it
-        // continue;
-        // }
-        // let committee = self.committee_manager.get_committee(shard).await;
-        // dbg!(committee.clone());
-        // for node_id in committee {
-        //     outgoing.push((
-        //         node_id,
-        //         Message::BlockProposal {
-        //             id: self.id_provider.next(),
-        //             block: block.clone(),
-        //         },
-        //     ));
-        // }
-        // }
+        for shard in involved_shards {
+            if shard == self.shard {
+                continue;
+            }
+            let committee = self.committee_manager.get_committee(shard).await;
+            dbg!(committee.clone());
+            for node_id in committee {
+                outgoing.push((
+                    node_id,
+                    Message::BlockProposal {
+                        id: self.id_provider.next(),
+                        block: block.clone(),
+                    },
+                ));
+            }
+        }
 
         for local in self.committee_manager.get_committee(self.shard).await {
             outgoing.push((
