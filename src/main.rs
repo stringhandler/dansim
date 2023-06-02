@@ -116,6 +116,9 @@ async fn main() {
         println!("Time: {:?}", curr_time);
         if let Some(transaction) = transaction_generator.next() {
             let transaction = Arc::new(transaction);
+            subscriber
+                .on_transaction_queued(transaction.id, curr_time)
+                .await;
             println!("Transaction: {:?}", transaction);
             for (vn_id, _) in &vns {
                 let m = Message::Transaction {

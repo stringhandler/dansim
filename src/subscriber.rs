@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::qc::Qc;
 use crate::transaction::Shard;
 use neo4rs::query;
 use neo4rs::Graph;
@@ -44,6 +45,10 @@ impl Subscriber {
         lock.entry(block.proposed_by)
             .or_insert_with(|| Stats::default())
             .leaves_created += 1;
+
+        self.client.execute(query("MATCH (b: Block {id: $id}), (q: Qc {id: $qc_id}) CREATE (b)-[n:JUSTIFY]->(q) RETURN n")
+            .param("id", block.id)
+            .param("qc_id",  block.justify.id)).await.expect("Failed to create qc rel").next().await.expect("failed to create qc rel");
     }
 
     pub async fn on_vote(&self, vn_id: u32, block_id: u32, t: u128) {
@@ -108,6 +113,103 @@ impl Subscriber {
         while let Ok(Some(row)) = res.next().await {
             // println!("indexer created");
         }
+    }
+
+    pub async fn on_transaction_queued(&self, tx_id: u32, t: u128) {
+        self.client
+            .execute(
+                query("CREATE (t: Transaction {id: $tx_id, t: $t})")
+                    .param("tx_id", tx_id)
+                    .param("t", t as u32),
+            )
+            .await
+            .expect("Failed to create block")
+            .next()
+            .await
+            .expect("Failed to create tx");
+    }
+
+    pub async fn on_qc_created(&self, qc_id: u32, t: u128, block_id: u32) {
+        self.client
+            .execute(
+                query("MERGE (qc: Qc {id: $qc_id, t: $t})")
+                    .param("qc_id", qc_id)
+                    .param("t", t as u32),
+            )
+            .await
+            .expect("Failed to create qc")
+            .next()
+            .await
+            .expect("Failed to create qc");
+
+        self.client.execute(query("MATCH (b: Block {id: $id}), (qc: Qc { id: $qc_id}) CREATE (qc)-[n:QC_FOR{ t:  $t}]->(b) RETURN n").param("id", block_id)
+            .param("t", t as u32)
+            .param("qc_id", qc_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
+    }
+
+    pub async fn on_transaction_prepared_ready(
+        &self,
+        tx_id: u32,
+        shard: Shard,
+        in_qc: Arc<Qc>,
+        t: u128,
+    ) {
+        self.client.execute(query("MATCH (q: Qc {id: $id}), (t: Transaction { id: $tx_id}) CREATE (t)-[n:PREPARED_READY_IN{ t:  $t}]->(q) RETURN n")
+            .param("id", in_qc.id)
+            .param("t", t as u32)
+            .param("tx_id", tx_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
+    }
+
+    pub async fn on_transaction_prepared_waiting(
+        &self,
+        tx_id: u32,
+        shard: Shard,
+        in_qc: Arc<Qc>,
+        t: u128,
+    ) {
+        self.client.execute(query("MATCH (q: Qc {id: $id}), (t: Transaction { id: $tx_id}) CREATE (t)-[n:PREPARED_WAITING_IN { t:  $t}]->(q) RETURN n")
+            .param("id", in_qc.id)
+            .param("t", t as u32)
+            .param("tx_id", tx_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
+    }
+
+    pub async fn on_transaction_precommit_ready(
+        &self,
+        tx_id: u32,
+        shard: Shard,
+        in_qc: Arc<Qc>,
+        t: u128,
+    ) {
+        self.client.execute(query("MATCH (q: Qc{id: $id}), (t: Transaction { id: $tx_id}) CREATE (t)-[n:PRECOMMIT_READY_IN { t:  $t}]->(q) RETURN n")
+            .param("id", in_qc.id)
+            .param("t", t as u32)
+            .param("tx_id", tx_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
+    }
+
+    pub async fn on_transaction_precommit_waiting(
+        &self,
+        tx_id: u32,
+        shard: Shard,
+        in_qc: Arc<Qc>,
+        t: u128,
+    ) {
+        self.client.execute(query("MATCH (q:Qc{id: $id}), (t: Transaction { id: $tx_id}) CREATE (t)-[n:PRECOMMIT_WAITING_IN { t:  $t}]->(q) RETURN n")
+            .param("id", in_qc.id)
+            .param("t", t as u32)
+            .param("tx_id", tx_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
+    }
+
+    pub async fn on_transaction_committed(
+        &self,
+        tx_id: u32,
+        shard: Shard,
+        in_qc: Arc<Qc>,
+        t: u128,
+    ) {
+        self.client.execute(query("MATCH (q: Qc {id: $id}), (t: Transaction { id: $tx_id}) CREATE (t)-[n:COMMITTED_IN { t:  $t}]->(q) RETURN n")
+            .param("id", in_qc.id)
+            .param("t", t as u32)
+            .param("tx_id", tx_id)).await.expect("Failed to create block").next().await.expect("Failed to create block");
     }
 
     pub async fn on_message_sent(

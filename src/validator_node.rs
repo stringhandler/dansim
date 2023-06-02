@@ -182,13 +182,13 @@ impl ValidatorNode {
                 },
             ));
 
-            self.update_blocks(block, current_time);
+            self.update_blocks(block, current_time).await;
         }
 
         result_messages
     }
 
-    fn update_blocks(&mut self, block: Arc<Block>, current_time: u128) {
+    async fn update_blocks(&mut self, block: Arc<Block>, current_time: u128) {
         self.current_height = block.height;
 
         let b_dash_dash = self
@@ -201,58 +201,11 @@ impl ValidatorNode {
         // commit foreign consensus blocks here or wait for a 3 chain locally.
         // for now, I'm going to assume it's fine to commit them here
         // ======= Prepare ======
-        for tx in &b_dash_dash.prepare_txs {
-            // local cerb
-            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
-                self.ready_prepared_mempool.push(tx.clone());
-            } else {
-                // remote cerb
-                self.waiting_prepared_mempool
-                    .push((current_time, tx.clone()));
-            }
-        }
 
-        //TODO: should apply all the txs in the previous blocks
-        let new_tx: Vec<Arc<Transaction>> = self.new_tx_mempool.drain().collect();
-        for tx in new_tx {
-            if !b_dash_dash.prepare_txs.contains(&tx) {
-                self.new_tx_mempool.push(tx);
-            }
-        }
+        self.apply_qc(&block.justify, current_time, &b_dash_dash)
+            .await;
 
-        // ==== precomitted =======
-        for tx in &b_dash_dash.precommit_txs {
-            // local cerb
-            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
-                self.ready_pre_committed_mempool.push(tx.clone());
-            } else {
-                // remote cerb
-                self.waiting_pre_committed_mempool
-                    .push((current_time, tx.clone()));
-            }
-        }
-
-        let preps: Vec<Arc<Transaction>> = self.ready_prepared_mempool.drain().collect();
-        for tx in preps {
-            if !b_dash_dash.precommit_txs.contains(&tx) {
-                self.ready_prepared_mempool.push(tx);
-            }
-        }
-
-        let waiting: Vec<(u128, Arc<Transaction>)> =
-            self.waiting_prepared_mempool.drain(..).collect();
-        for (time, tx) in waiting {
-            if !b_dash_dash.precommit_txs.contains(&tx) {
-                self.waiting_prepared_mempool.push((time, tx));
-            }
-        }
-
-        // ====== Committed ...... Can save to DB ======
-
-        for tx in &b_dash_dash.commit_txs {
-            println!("APPLIED TX: {:?}", tx);
-        }
-
+        /// other hotstuff
         let b_dash = self
             .blocks
             .get(&b_dash_dash.justify.block_id)
@@ -274,6 +227,90 @@ impl ValidatorNode {
         if b_dash_dash.parent_id == b_dash.id && b_dash.parent_id == b.id {
             self.on_commit(b.clone());
             self.b_exec = b.clone();
+        }
+    }
+
+    async fn apply_qc(&mut self, qc: &Arc<Qc>, current_time: u128, justified_node: &Arc<Block>) {
+        for tx in &justified_node.prepare_txs {
+            // local cerb
+            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
+                self.ready_prepared_mempool.push(tx.clone());
+                self.subscriber
+                    .on_transaction_prepared_ready(tx.id, self.shard, qc.clone(), current_time)
+                    .await;
+            } else {
+                // remote cerb
+                self.waiting_prepared_mempool
+                    .push((current_time, tx.clone()));
+                self.subscriber
+                    .on_transaction_prepared_waiting(tx.id, self.shard, qc.clone(), current_time)
+                    .await;
+            }
+        }
+
+        //TODO: should apply all the txs in the previous blocks
+        let new_tx: Vec<Arc<Transaction>> = self.new_tx_mempool.drain().collect();
+        for tx in new_tx {
+            if !justified_node.prepare_txs.contains(&tx) {
+                self.new_tx_mempool.push(tx);
+            }
+        }
+
+        // ==== precomitted =======
+        for tx in &justified_node.precommit_txs {
+            // local cerb
+            if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
+                self.ready_pre_committed_mempool.push(tx.clone());
+                self.subscriber
+                    .on_transaction_precommit_ready(tx.id, self.shard, qc.clone(), current_time)
+                    .await;
+            } else {
+                // remote cerb
+                self.waiting_pre_committed_mempool
+                    .push((current_time, tx.clone()));
+                self.subscriber
+                    .on_transaction_precommit_waiting(tx.id, self.shard, qc.clone(), current_time)
+                    .await;
+            }
+        }
+
+        let preps: Vec<Arc<Transaction>> = self.ready_prepared_mempool.drain().collect();
+        for tx in preps {
+            if !justified_node.precommit_txs.contains(&tx) {
+                self.ready_prepared_mempool.push(tx);
+            }
+        }
+
+        let waiting: Vec<(u128, Arc<Transaction>)> =
+            self.waiting_prepared_mempool.drain(..).collect();
+        for (time, tx) in waiting {
+            if !justified_node.precommit_txs.contains(&tx) {
+                self.waiting_prepared_mempool.push((time, tx));
+            }
+        }
+
+        // ====== Committed ...... Can save to DB ======
+
+        for tx in &justified_node.commit_txs {
+            println!("APPLIED TX: {:?}", tx);
+            self.subscriber
+                .on_transaction_committed(tx.id, self.shard, qc.clone(), current_time)
+                .await;
+        }
+
+        let preps: Vec<Arc<Transaction>> = self.ready_pre_committed_mempool.drain().collect();
+        for tx in preps {
+            if !justified_node.commit_txs.contains(&tx) {
+                self.ready_pre_committed_mempool.push(tx);
+            }
+        }
+
+        let waiting: Vec<(u128, Arc<Transaction>)> =
+            self.waiting_pre_committed_mempool.drain(..).collect();
+        for (time, tx) in waiting {
+            if !justified_node.commit_txs.contains(&tx) {
+                self.waiting_pre_committed_mempool.push((time, tx));
+            }
         }
     }
 
@@ -464,13 +501,26 @@ impl ValidatorNode {
 
         let votes = votes.clone();
         let shard_size = self.committee_manager.get_committee(self.shard).await.len();
-        if votes.len() >= shard_size - ((shard_size - 1) / 3) {
-            self.update_high_qc(Arc::new(Qc::new(
+        // Send the first time only (== instead of >=)
+
+        if votes.len() == shard_size - ((shard_size - 1) / 3) {
+            let qc = Arc::new(Qc::new(
                 self.id_provider.next(),
                 block_id,
                 block_height,
                 votes.clone(),
-            )));
+            ));
+            self.subscriber
+                .on_qc_created(qc.id, current_time, qc.block_id)
+                .await;
+            // Apply the node so that we can propose a new block using the updated mempools
+            let qc_block = self
+                .blocks
+                .get(&qc.block_id)
+                .expect("block missing")
+                .clone();
+            self.apply_qc(&qc, current_time, &qc_block).await;
+            self.update_high_qc(qc);
             true
         } else {
             false
