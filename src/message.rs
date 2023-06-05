@@ -66,7 +66,7 @@ impl Display for Message {
                     block.precommit_txs.len()
                 )
             }
-            Message::Vote { id, .. } => write!(f, "Msg:Vote: {}", id),
+            Message::Vote { id, vote_by, .. } => write!(f, "Msg:Vote: {} from {}", id, vote_by),
             Message::RequestBlock { id, .. } => write!(f, "Msg:RequestBlock: {}", id),
             Message::RequestBlockResponse { id, .. } => {
                 write!(f, "Msg:RequestBlockResponse: {}", id)

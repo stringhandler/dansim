@@ -475,9 +475,12 @@ impl ValidatorNode {
                     vote_by,
                     ..
                 } => {
-                    has_new_qc_or_can_propose = self
+                    dbg!("Got a vote");
+                    dbg!(self.id);
+                    has_new_qc_or_can_propose |= self
                         .on_receive_vote(*block_id, *block_height, *vote_by, current_time)
                         .await;
+                    dbg!(has_new_qc_or_can_propose);
                 }
                 Message::RequestBlock {
                     block_id,
@@ -513,7 +516,8 @@ impl ValidatorNode {
         if has_new_qc_or_can_propose
         // ||
         {
-            dbg!("on beat");
+            dbg!("Has new qc, checking if I am the leader");
+            self.print_stats();
             if self.is_leader().await
             // && (self.last_proposed_round.is_none()
             //     || self.last_proposed_round.unwrap() < self.hotstuff_round)
@@ -525,7 +529,6 @@ impl ValidatorNode {
             if self.time_last_proposal_received + self.config.delta.as_millis() / 2 <= current_time
             {
                 // if leader, just propose
-                dbg!("on beat");
                 if self.is_leader().await {
                     outgoing.extend(self.on_propose(current_time).await);
                 }
@@ -723,7 +726,6 @@ impl ValidatorNode {
                 continue;
             }
             let committee = self.committee_manager.get_committee(shard).await;
-            dbg!(committee.clone());
             for node_id in committee {
                 outgoing.push((
                     node_id,
