@@ -103,20 +103,24 @@ async fn main() {
 
     loop {
         println!("Time: {:?}", curr_time);
-        if let Some(transaction) = transaction_generator.next() {
-            let transaction = Arc::new(transaction);
-            subscriber
-                .on_transaction_queued(transaction.id, curr_time, &transaction)
-                .await;
-            println!("Transaction: {:?}", transaction);
-            for (vn_id, _) in &vns {
-                let m = Message::Transaction {
-                    id: id_provider.next(),
-                    tx: transaction.clone(),
-                };
+        loop {
+            if let Some(transaction) = transaction_generator.next() {
+                let transaction = Arc::new(transaction);
+                subscriber
+                    .on_transaction_queued(transaction.id, curr_time, &transaction)
+                    .await;
+                println!("Transaction: {:?}", transaction);
+                for (vn_id, _) in &vns {
+                    let m = Message::Transaction {
+                        id: id_provider.next(),
+                        tx: transaction.clone(),
+                    };
 
-                println!("Sending transaction message: {} to vn: {:?}", m.id(), vn_id);
-                network.send_message(indexer.id, *vn_id, m, curr_time).await;
+                    println!("Sending transaction message: {} to vn: {:?}", m.id(), vn_id);
+                    network.send_message(indexer.id, *vn_id, m, curr_time).await;
+                }
+            } else {
+                break;
             }
         }
         loop {

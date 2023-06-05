@@ -28,15 +28,15 @@ pub struct Cli {
     #[clap(long, default_value = "5")]
     pub max_tx_per_step_per_block: usize,
 
-    #[clap(long, default_value = "10")]
+    #[clap(long, default_value = "50")]
     pub num_transactions: usize,
 
-    #[clap(long, default_value = "50")]
-    pub probability_2_shards: u32,
-    #[clap(long, default_value = "20")]
-    pub probability_3_shards: u32,
-    #[clap(long, default_value = "10")]
-    pub probability_4_shards: u32,
     #[clap(long, default_value = "5")]
+    pub probability_2_shards: u32,
+    #[clap(long, default_value = "0")]
+    pub probability_3_shards: u32,
+    #[clap(long, default_value = "0")]
+    pub probability_4_shards: u32,
+    #[clap(long, default_value = "0")]
     pub probability_5_shards: u32,
 }

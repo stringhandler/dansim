@@ -651,23 +651,23 @@ impl ValidatorNode {
         loop {
             if prepare_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(transaction) = self.new_tx_mempool.pop() {
-                    if !qc_block.prepare_txs.contains(&transaction) {
-                        prepare_txs.push(transaction);
-                    }
+                    // if !qc_block.prepare_txs.contains(&transaction) {
+                    prepare_txs.push(transaction);
+                    // }
                 }
             }
             if precommit_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(tx) = self.ready_prepared_mempool.pop() {
-                    if !qc_block.precommit_txs.contains(&tx) {
-                        precommit_txs.push(tx);
-                    }
+                    // if !qc_block.precommit_txs.contains(&tx) {
+                    precommit_txs.push(tx);
+                    // }
                 }
             }
             if commit_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(tx) = self.ready_pre_committed_mempool.pop() {
-                    if !qc_block.commit_txs.contains(&tx) {
-                        commit_txs.push(tx);
-                    }
+                    // if !qc_block.commit_txs.contains(&tx) {
+                    commit_txs.push(tx);
+                    // }
                 }
             }
 

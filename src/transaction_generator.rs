@@ -41,7 +41,7 @@ impl TransactionGenerator {
         }
 
         // let transaction = self.static_transactions[self.current_index].clone();
-        // self.current_index = self.current_index + 1;
+        self.current_index = self.current_index + 1;
         if thread_rng().next_u32() % 100 < self.config.probability_5_shards {
             let shard_1 = thread_rng().next_u32() % self.config.num_shards;
             let shard_2 = thread_rng().next_u32() % self.config.num_shards;
