@@ -6,7 +6,7 @@ use crate::message::Message;
 use crate::node_id::NodeId;
 use crate::qc::Qc;
 use crate::subscriber::Subscriber;
-use crate::transaction::{Shard, Transaction};
+use crate::transaction::{Shard, SortableByFeeTransaction, Transaction};
 use itertools::Itertools;
 use log::*;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -36,11 +36,11 @@ pub struct ValidatorNode {
     pub base_latency: u128,
     new_view_votes: HashMap<u32, Vec<u32>>,
     // Mempools
-    pub new_tx_mempool: BinaryHeap<Arc<Transaction>>,
+    pub new_tx_mempool: BinaryHeap<SortableByFeeTransaction>,
     pub waiting_prepared_mempool: HashMap<u32, (Arc<Transaction>, HashMap<Shard, Arc<Block>>)>,
-    pub ready_prepared_mempool: BinaryHeap<Arc<Transaction>>,
+    pub ready_prepared_mempool: BinaryHeap<SortableByFeeTransaction>,
     pub waiting_pre_committed_mempool: HashMap<u32, (Arc<Transaction>, HashMap<Shard, Arc<Block>>)>,
-    pub ready_pre_committed_mempool: BinaryHeap<Arc<Transaction>>,
+    pub ready_pre_committed_mempool: BinaryHeap<SortableByFeeTransaction>,
     // TODO: I don't think I need a committed mempool....
 }
 
@@ -121,7 +121,10 @@ impl ValidatorNode {
 
     pub fn add_transaction(&mut self, transaction: Arc<Transaction>, at_time: u128) {
         if transaction.shards.contains(&self.shard) {
-            self.new_tx_mempool.push(transaction);
+            self.new_tx_mempool.push(SortableByFeeTransaction {
+                tx: transaction.clone(),
+                fee: transaction.effective_fee,
+            })
         } else {
             eprintln!(
                 "Transaction {:?} does not belong to shard {:?}",
@@ -197,7 +200,10 @@ impl ValidatorNode {
                         shard_nodes.insert(block.shard, block.clone());
                         // check if we can move it to ready
                         if shard_nodes.len() == tx.shards.len() {
-                            self.ready_prepared_mempool.push(tx.clone());
+                            self.ready_prepared_mempool.push(SortableByFeeTransaction {
+                                tx: tx.clone(),
+                                fee: tx.effective_fee,
+                            });
                             must_remove = true;
                             // self.waiting_prepared_mempool.remove(&tx.id);
                             // TODO: attach all nodes to the tx
@@ -263,8 +269,8 @@ impl ValidatorNode {
         if b_dash.height > self.locked_node.height {
             self.locked_node = b_dash.clone();
         }
-        // Should we not just commit b?
-        // This would exclude dummy blocks from being executed until there is a 3 chain
+
+        // Only commit when we have formed a 3 chain, but then commit everything
         if b_dash_dash.parent_id == b_dash.id && b_dash.parent_id == b.id {
             self.on_commit(b.clone());
             self.b_exec = b.clone();
@@ -275,7 +281,10 @@ impl ValidatorNode {
         for tx in &justified_node.prepare_txs {
             // local cerb
             if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
-                self.ready_prepared_mempool.push(tx.clone());
+                self.ready_prepared_mempool.push(SortableByFeeTransaction {
+                    tx: tx.clone(),
+                    fee: tx.effective_fee,
+                });
                 self.subscriber
                     .on_transaction_prepared_ready(tx.id, self.shard, qc.clone(), current_time)
                     .await;
@@ -288,7 +297,10 @@ impl ValidatorNode {
                 entry.1.insert(self.shard, justified_node.clone());
                 // move to ready if we have all the shards
                 if entry.1.len() == tx.shards.len() {
-                    self.ready_prepared_mempool.push(tx.clone());
+                    self.ready_prepared_mempool.push(SortableByFeeTransaction {
+                        tx: tx.clone(),
+                        fee: tx.effective_fee,
+                    });
                     self.waiting_prepared_mempool.remove(&tx.id);
                     self.subscriber
                         .on_transaction_prepared_ready(tx.id, self.shard, qc.clone(), current_time)
@@ -307,9 +319,9 @@ impl ValidatorNode {
         }
 
         //TODO: should apply all the txs in the previous blocks
-        let new_tx: Vec<Arc<Transaction>> = self.new_tx_mempool.drain().collect();
+        let new_tx: Vec<SortableByFeeTransaction> = self.new_tx_mempool.drain().collect();
         for tx in new_tx {
-            if !justified_node.prepare_txs.contains(&tx) {
+            if !justified_node.prepare_txs.contains(&tx.tx) {
                 self.new_tx_mempool.push(tx);
             }
         }
@@ -318,7 +330,12 @@ impl ValidatorNode {
         for tx in &justified_node.precommit_txs {
             // local cerb
             if tx.shards.len() == 1 && tx.shards.contains(&self.shard) {
-                self.ready_pre_committed_mempool.push(tx.clone());
+                self.ready_pre_committed_mempool
+                    .push(SortableByFeeTransaction {
+                        tx: tx.clone(),
+                        fee: tx.effective_fee,
+                    });
+
                 self.subscriber
                     .on_transaction_precommit_ready(tx.id, self.shard, qc.clone(), current_time)
                     .await;
@@ -337,7 +354,11 @@ impl ValidatorNode {
                 entry.1.insert(self.shard, justified_node.clone());
                 // move to ready if we have all the shards
                 if entry.1.len() == tx.shards.len() {
-                    self.ready_pre_committed_mempool.push(tx.clone());
+                    self.ready_pre_committed_mempool
+                        .push(SortableByFeeTransaction {
+                            tx: tx.clone(),
+                            fee: tx.effective_fee,
+                        });
                     self.waiting_pre_committed_mempool.remove(&tx.id);
                     self.subscriber
                         .on_transaction_precommit_ready(tx.id, self.shard, qc.clone(), current_time)
@@ -355,9 +376,9 @@ impl ValidatorNode {
             }
         }
 
-        let preps: Vec<Arc<Transaction>> = self.ready_prepared_mempool.drain().collect();
+        let preps: Vec<SortableByFeeTransaction> = self.ready_prepared_mempool.drain().collect();
         for tx in preps {
-            if !justified_node.precommit_txs.contains(&tx) {
+            if !justified_node.precommit_txs.contains(&tx.tx) {
                 self.ready_prepared_mempool.push(tx);
             }
         }
@@ -385,9 +406,10 @@ impl ValidatorNode {
                 .await;
         }
 
-        let preps: Vec<Arc<Transaction>> = self.ready_pre_committed_mempool.drain().collect();
+        let preps: Vec<SortableByFeeTransaction> =
+            self.ready_pre_committed_mempool.drain().collect();
         for tx in preps {
-            if !justified_node.commit_txs.contains(&tx) {
+            if !justified_node.commit_txs.contains(&tx.tx) {
                 self.ready_pre_committed_mempool.push(tx);
             }
         }
@@ -651,25 +673,26 @@ impl ValidatorNode {
 
         let qc_block = self.blocks.get(&qc.block_id).unwrap();
 
+        self.print_stats();
         loop {
             if prepare_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(transaction) = self.new_tx_mempool.pop() {
                     // if !qc_block.prepare_txs.contains(&transaction) {
-                    prepare_txs.push(transaction);
+                    prepare_txs.push(transaction.tx);
                     // }
                 }
             }
             if precommit_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(tx) = self.ready_prepared_mempool.pop() {
                     // if !qc_block.precommit_txs.contains(&tx) {
-                    precommit_txs.push(tx);
+                    precommit_txs.push(tx.tx);
                     // }
                 }
             }
             if commit_txs.len() < self.config.max_tx_per_step_per_block {
                 if let Some(tx) = self.ready_pre_committed_mempool.pop() {
                     // if !qc_block.commit_txs.contains(&tx) {
-                    commit_txs.push(tx);
+                    commit_txs.push(tx.tx);
                     // }
                 }
             }
